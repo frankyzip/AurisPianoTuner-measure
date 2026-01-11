@@ -20,7 +20,23 @@ namespace AurisPianoTuner_measure.Services
         private bool _hasTarget = false;
         private PianoMetadata? _pianoMetadata;
 
+        // Rolling buffer for best measurement selection
+        private readonly List<NoteMeasurement> _measurementBuffer = new();
+        private const int MaxBufferSize = 10; // Keep last 10 measurements
+        private NoteMeasurement? _bestMeasurement = null;
+        private int _consecutiveGoodMeasurements = 0;
+        private const int AutoStopThreshold = 3; // Auto-stop after 3 consecutive "Groen" measurements
+
+        // Frequency filtering: ±50 cents window
+        private double _freqMin = 0;
+        private double _freqMax = 0;
+
         public event EventHandler<NoteMeasurement>? MeasurementUpdated;
+
+        /// <summary>
+        /// Event fired when measurement auto-stops (quality threshold reached)
+        /// </summary>
+        public event EventHandler<NoteMeasurement>? MeasurementAutoStopped;
         
         /// <summary>
         /// Event voor raw FFT spectrum data (real-time visualisatie).
@@ -83,6 +99,27 @@ namespace AurisPianoTuner_measure.Services
             _targetFreq = theoreticalFrequency;
             _bufferWritePos = 0;
             _hasTarget = true;
+
+            // Calculate frequency window: ±50 cents
+            // Formula: freq = targetFreq * 2^(cents/1200)
+            _freqMin = theoreticalFrequency * Math.Pow(2, -50.0 / 1200.0); // -50 cents
+            _freqMax = theoreticalFrequency * Math.Pow(2, 50.0 / 1200.0);  // +50 cents
+
+            // Reset rolling buffer
+            _measurementBuffer.Clear();
+            _bestMeasurement = null;
+            _consecutiveGoodMeasurements = 0;
+
+            System.Diagnostics.Debug.WriteLine($"[FftAnalyzer] Target set: {PianoPhysics.MidiToNoteName(midiIndex)} ({theoreticalFrequency:F2} Hz), " +
+                $"frequency window: {_freqMin:F2} - {_freqMax:F2} Hz (±50 cents)");
+        }
+
+        private string MidiToNoteName(int midiNote)
+        {
+            string[] noteNames = { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
+            int noteIndex = midiNote % 12;
+            int octave = midiNote / 12 - 1;
+            return $"{noteNames[noteIndex]}{octave}";
         }
 
         public void Reset()
@@ -973,13 +1010,23 @@ namespace AurisPianoTuner_measure.Services
 
         private void LogAndEmit(NoteMeasurement result, bool isNearScaleBreak, ScaleBreakRegion region)
         {
+            // ===== FREQUENCY FILTERING: ±50 cent window =====
+            if (result.CalculatedFundamental < _freqMin || result.CalculatedFundamental > _freqMax)
+            {
+                // Fundamental outside acceptable range - reject this measurement
+                System.Diagnostics.Debug.WriteLine(
+                    $"[Freq Filter] REJECTED: f0={result.CalculatedFundamental:F2} Hz outside window " +
+                    $"[{_freqMin:F2} - {_freqMax:F2} Hz] (±50 cents from {_targetFreq:F2} Hz)");
+                return; // Do NOT emit this measurement
+            }
+
             // Logging
             if (_pianoMetadata != null)
             {
-                string scaleBreakInfo = isNearScaleBreak 
-                    ? $" [SCALE BREAK: {region}]" 
+                string scaleBreakInfo = isNearScaleBreak
+                    ? $" [SCALE BREAK: {region}]"
                     : "";
-                
+
                 System.Diagnostics.Debug.WriteLine(
                     $"[{_pianoMetadata.Type}] {result.NoteName} (MIDI {_targetMidi}): " +
                     $"{result.DetectedPartials.Count} partials, " +
@@ -987,8 +1034,81 @@ namespace AurisPianoTuner_measure.Services
                     $"B={result.InharmonicityCoefficient:E4}{scaleBreakInfo}");
             }
 
-            // Event uitzending
-            MeasurementUpdated?.Invoke(this, result);
+            // ===== ROLLING BUFFER: Track best measurement =====
+            _measurementBuffer.Add(result);
+            if (_measurementBuffer.Count > MaxBufferSize)
+            {
+                _measurementBuffer.RemoveAt(0); // Remove oldest
+            }
+
+            // Select best measurement from buffer
+            UpdateBestMeasurement();
+
+            // ===== AUTO-STOP: Check if quality threshold reached =====
+            if (result.Quality == "Groen" && result.DetectedPartials.Count >= 8)
+            {
+                _consecutiveGoodMeasurements++;
+                System.Diagnostics.Debug.WriteLine(
+                    $"[Auto-Stop] Good measurement {_consecutiveGoodMeasurements}/{AutoStopThreshold}");
+
+                if (_consecutiveGoodMeasurements >= AutoStopThreshold && _bestMeasurement != null)
+                {
+                    // Auto-stop: emit best measurement
+                    System.Diagnostics.Debug.WriteLine(
+                        $"[Auto-Stop] TRIGGERED! Emitting best measurement: " +
+                        $"{_bestMeasurement.DetectedPartials.Count} partials, " +
+                        $"f0={_bestMeasurement.CalculatedFundamental:F2} Hz");
+
+                    MeasurementAutoStopped?.Invoke(this, _bestMeasurement);
+                    return; // Don't emit regular update
+                }
+            }
+            else
+            {
+                _consecutiveGoodMeasurements = 0; // Reset counter
+            }
+
+            // Event uitzending (regular update)
+            if (_bestMeasurement != null)
+            {
+                MeasurementUpdated?.Invoke(this, _bestMeasurement);
+            }
+        }
+
+        /// <summary>
+        /// Updates _bestMeasurement by selecting the highest quality measurement from the buffer.
+        /// Quality criteria:
+        /// 1. Highest quality rating ("Groen" > "Oranje" > "Rood")
+        /// 2. Most detected partials
+        /// 3. Highest fundamental amplitude
+        /// </summary>
+        private void UpdateBestMeasurement()
+        {
+            if (_measurementBuffer.Count == 0)
+            {
+                _bestMeasurement = null;
+                return;
+            }
+
+            // Sort measurements by quality
+            var sorted = _measurementBuffer
+                .OrderByDescending(m => GetQualityScore(m))
+                .ThenByDescending(m => m.DetectedPartials.Count)
+                .ThenByDescending(m => m.DetectedPartials.FirstOrDefault()?.Amplitude ?? -100)
+                .ToList();
+
+            _bestMeasurement = sorted.First();
+        }
+
+        private int GetQualityScore(NoteMeasurement m)
+        {
+            return m.Quality switch
+            {
+                "Groen" => 3,
+                "Oranje" => 2,
+                "Rood" => 1,
+                _ => 0
+            };
         }
 
         private static readonly string[] NoteNames = {
