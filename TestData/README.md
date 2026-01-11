@@ -45,8 +45,8 @@ Deze meting toont uitstekende resultaten voor een enkele snaar:
 **Audio interface:** PreSonus Studio 24c
 
 **Piano specificaties:**
-- Type: Parlor Grand
-- Afmeting: 180 cm
+- Type: Console piano
+- Afmeting: 107 cm
 - Scale break: MIDI note 41
 
 **Meetgegevens:**
@@ -62,13 +62,14 @@ Deze meting toont uitstekende resultaten voor een enkele snaar:
 - Sterkste partiaal: n=1 (fundamentaal) met amplitude 47.33 dB
 
 **Opmerkingen:**
-- Minder partialen gedetecteerd (7 vs 11 met UMC202HD)
-- Fundamentele frequentie iets lager, mogelijk door:
-  - Verschillende piano (Console vs Parlor Grand volgens metadata)
-  - Ontstemming tussen metingen
-  - 20 minuten tijdsverschil tussen metingen
+- Minder partialen gedetecteerd (7 vs 11 met UMC202HD) op dezelfde piano
+- Fundamentele frequentie 1.09 Hz lager, mogelijk door:
+  - Ontstemming tussen metingen (20 minuten tijdsverschil)
+  - Temperatuur/vochtigheid effecten
+  - Interface-specifieke frequentie resolutie
 - Vergelijkbare amplitude en kwaliteit score (beide Groen)
 - Ontbrekende partialen: n=2, 3, 6, 9, 15 niet gedetecteerd
+- Wel n=7 gedetecteerd (niet door UMC202HD)
 
 ---
 
@@ -83,8 +84,10 @@ Beide metingen uitgevoerd met identieke procedure:
 
 ### Vergelijkingstabel
 
-| Parameter | UMC202HD (Console) | Studio 24c (Parlor Grand) | Verschil |
-|-----------|-------------------|---------------------------|----------|
+**Gemeten op dezelfde Console piano (107 cm), 20 minuten tijdsverschil**
+
+| Parameter | UMC202HD | Studio 24c | Verschil |
+|-----------|----------|------------|----------|
 | **Fundamentaal** | 439.98 Hz | 438.89 Hz | -1.09 Hz |
 | **Afwijking van 440 Hz** | -0.02 Hz | -1.11 Hz | -1.09 Hz |
 | **Amplitude fundamentaal** | 48.56 dB | 47.33 dB | -1.23 dB |
@@ -95,25 +98,47 @@ Beide metingen uitgevoerd met identieke procedure:
 
 ### Observaties
 
-**⚠️ Belangrijk:** De piano metadata verschilt tussen beide metingen (Console 107cm vs Parlor Grand 180cm), wat suggereert dat dit mogelijk verschillende piano's of verschillende instellingen zijn. Dit beïnvloedt de vergelijkbaarheid.
+**✓ Gecontroleerde vergelijking:** Beide metingen uitgevoerd op **dezelfde Console piano** (107 cm) met 20 minuten tijdsverschil. Dit is een echte A/B test van de twee audio interfaces.
 
-**Partiaal detectie:**
-- UMC202HD detecteerde meer opeenvolgende lage partialen (n=1,2,3,4,6)
-- Studio 24c miste n=2,3,6,9,15 maar detecteerde wel n=7 (niet door UMC202HD gedetecteerd)
-- Beide detecteerden hogere partialen (n=11,12,13,16)
+**Partiaal detectie patronen:**
+- **UMC202HD** detecteerde meer opeenvolgende **lage partialen** (n=1,2,3,4,6,9)
+- **Studio 24c** detecteerde **n=7** (niet door UMC202HD gedetecteerd)
+- **Studio 24c** miste n=2,3,6,9,15 (mogelijk net onder detectiedrempel)
+- Beide detecteerden dezelfde **hoge partialen** (n=11,12,13,16)
 
-**Mogelijke verklaringen voor verschillen:**
-1. **Verschillende piano's** (volgens metadata): Console vs Parlor Grand kunnen andere harmonische karakteristieken hebben
-2. **Ontstemming**: 20 minuten tussen metingen, temperatuur/vochtigheid effecten
-3. **Peak detectie gevoeligheid**: Mogelijk net andere amplitudes rond detectiedrempel
-4. **Microfoon positie**: Kleine verschillen in positie beïnvloeden partiaal balans
+**Frequentie verschil (1.09 Hz):**
+- UMC202HD: 439.98 Hz (zeer dicht bij 440 Hz)
+- Studio 24c: 438.89 Hz (1.11 Hz lager)
+- Mogelijke oorzaken:
+  - Ontstemming gedurende 20 minuten meetinterval
+  - Temperatuur/vochtigheid effecten op snaarspanning
+  - Verschillende FFT bin interpolatie tussen interfaces
+
+**Amplitude en kwaliteit:**
+- Vergelijkbare fundamentaal amplitude: 48.56 dB vs 47.33 dB (1.23 dB verschil)
+- Beide scoren "Groen" (goede kwaliteit)
+- Beide meten identieke inharmoniciteit (1E-05)
+
+**Interface-specifieke kenmerken:**
+- UMC202HD lijkt gevoeliger voor lage partialen (n=2,3,6,9)
+- Studio 24c detecteerde uniek n=7 (3124 Hz met 23.7 dB amplitude)
+- Mogelijk verschil in frequentie response of ADC karakteristieken
 
 ### Gebruiksdoeleinden
 
 Deze testdata kan gebruikt worden voor:
-- Validatie van de FFT-analyse algoritmes
-- Testen van partiaal detectie onder verschillende condities
-- Referentie voor enkelvoudige snaar metingen
-- Benchmark voor meetkwaliteit
-- Vergelijking van audio interface prestaties
-- Testen van robuustheid tegen verschillende piano types
+- **Interface vergelijking**: A/B test tussen budget (UMC202HD) en mid-range (Studio 24c) interfaces
+- **Validatie van FFT-analyse**: Testen of algoritmes consistent werken met verschillende hardware
+- **Partiaal detectie**: Onderzoeken van detectiedrempels en gevoeligheid
+- **Referentie metingen**: Enkelvoudige snaar metingen voor benchmark
+- **Meetkwaliteit**: Both interfaces leveren "Groen" kwaliteit, maar met verschillende partiaal patronen
+- **Reproducibiliteit**: Analyseren van frequentie stabiliteit over 20 minuten
+- **Hardware specificaties**: Testen van impact van verschillende ADC karakteristieken
+
+### Conclusies
+
+1. **Beide interfaces leveren goede resultaten** (Groen kwaliteit score)
+2. **UMC202HD detecteert meer partialen** (11 vs 7), vooral in lage frequenties
+3. **Frequentie verschil van 1.09 Hz** suggereert lichte ontstemming tijdens meetinterval
+4. **Partiaal detectie verschilt**, maar beide detecteren hoogste partialen consistent
+5. **Voor piano tuning zijn beide interfaces geschikt**, met lichte voorkeur voor UMC202HD vanwege meer gedetecteerde partialen

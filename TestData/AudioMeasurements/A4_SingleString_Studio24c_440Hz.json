@@ -4,8 +4,8 @@
   "SampleRate": 96000,
   "FftSize": 32768,
   "PianoMetadata": {
-    "Type": "ParlorGrand",
-    "DimensionCm": 180,
+    "Type": "Console",
+    "DimensionCm": 107,
     "ScaleBreakMidiNote": 41,
     "MeasurementDateTime": null,
     "SerialNumber": "",
