@@ -129,7 +129,7 @@ namespace AurisPianoTuner_measure.Services
                 NoteName = GetNoteName(_targetMidi)
             };
 
-            // Check if near scale break (±3 semitones for transitional zone)
+            // Check if near scale break (ï¿½3 semitones for transitional zone)
             // Scientific basis: Askenfelt & Jansson (1990) - "Five Lectures on the Acoustics of the Piano"
             // Scale break marks physical transition from wound (copper-wrapped) to plain steel strings
             // This causes abrupt change in inharmonicity coefficient (factor 2-4 reduction)
@@ -187,7 +187,7 @@ namespace AurisPianoTuner_measure.Services
                 return;
             }
 
-            // PASS 2: Initiële f0 schatting (zonder B-correctie)
+            // PASS 2: Initiï¿½le f0 schatting (zonder B-correctie)
             // Gebruik partials met amplitude > -40 dB voor betrouwbare schatting
             var strongPartials = detectedPartials.Where(p => p.Amplitude > -40 && p.n >= 1 && p.n <= 8).ToList();
 
@@ -221,7 +221,7 @@ namespace AurisPianoTuner_measure.Services
             // ITERATIVE CONVERGENCE: Verfijn f? en B door iteratie
             // Typisch convergeert dit in 2-3 iteraties met < 0.01 Hz verschil
             // Gebaseerd op Newton-Raphson convergentietheorie (Oppenheim & Schafer 2010)
-            double currentB = 0.0001; // Initiële schatting
+            double currentB = 0.0001; // Initiï¿½le schatting
             const int maxIterations = 5;
             const double convergenceThreshold = 0.01; // Hz - praktische precisie limiet voor piano tuning
             
@@ -238,8 +238,8 @@ namespace AurisPianoTuner_measure.Services
                 if (measuredPartial != null)
                 {
                     // Herbereken f? met nieuwe B (correcte inharmonicity compensatie)
-                    // f_n = n·f0·sqrt(1 + B·n²)
-                    // Oplossen naar f0: f0 = f_n / (n·sqrt(1 + B·n²))
+                    // f_n = nï¿½f0ï¿½sqrt(1 + Bï¿½nï¿½)
+                    // Oplossen naar f0: f0 = f_n / (nï¿½sqrt(1 + Bï¿½nï¿½))
                     double n = measuredPartial.n;
                     double fn = measuredPartial.Frequency;
                     double inharmonicityFactor = Math.Sqrt(1 + currentB * n * n);
@@ -458,7 +458,7 @@ namespace AurisPianoTuner_measure.Services
                 return fallbackB;
             }
 
-            // Least-squares fit: B = (N·?XY - ?X·?Y) / (N·?XX - (?X)²)
+            // Least-squares fit: B = (Nï¿½?XY - ?Xï¿½?Y) / (Nï¿½?XX - (?X)ï¿½)
             double denominator = count * sumXX - sumX * sumX;
 
             if (Math.Abs(denominator) < 1e-10)
@@ -497,19 +497,19 @@ namespace AurisPianoTuner_measure.Services
             // Expected B ranges based on scientific literature (Fletcher & Rossing 1998, Conklin 1996)
             return region switch
             {
-                // Wound strings: typical range 300-1000×10??
+                // Wound strings: typical range 300-1000ï¿½10??
                 ScaleBreakRegion.WoundStrings when B < 0.0003 =>
-                    $"Low B ({B:E3}) for wound strings (expected 300-1000×10??). Possible plain string or measurement error.",
+                    $"Low B ({B:E3}) for wound strings (expected 300-1000ï¿½10??). Possible plain string or measurement error.",
                 
                 ScaleBreakRegion.WoundStrings when B > 0.001 =>
-                    $"High B ({B:E3}) for wound strings (expected < 1000×10??). Check string condition or measurement.",
+                    $"High B ({B:E3}) for wound strings (expected < 1000ï¿½10??). Check string condition or measurement.",
                 
-                // Plain strings: typical range 50-400×10??
+                // Plain strings: typical range 50-400ï¿½10??
                 ScaleBreakRegion.PlainStrings when B < 0.00005 =>
-                    $"Very low B ({B:E3}) for plain strings (expected 50-400×10??). Unusual for acoustic piano.",
+                    $"Very low B ({B:E3}) for plain strings (expected 50-400ï¿½10??). Unusual for acoustic piano.",
                 
                 ScaleBreakRegion.PlainStrings when B > 0.0005 =>
-                    $"High B ({B:E3}) for plain strings (expected < 500×10??). Possible wound string or measurement error.",
+                    $"High B ({B:E3}) for plain strings (expected < 500ï¿½10??). Possible wound string or measurement error.",
                 
                 // Transition zone - always warn
                 ScaleBreakRegion.Transition =>
@@ -584,7 +584,7 @@ namespace AurisPianoTuner_measure.Services
             // SCALE BREAK COMPENSATION (Askenfelt & Jansson 1990, Fletcher & Rossing 1998)
             // At scale break transition (wound ? plain strings), inharmonicity changes abruptly (factor 2-4)
             // This causes frequency shifts that exceed normal search windows, especially for higher partials
-            // Expand search window by +40% within ±3 semitones of scale break to prevent missed detections
+            // Expand search window by +40% within ï¿½3 semitones of scale break to prevent missed detections
             if (isNearScaleBreak)
             {
                 baseSearchCents *= 1.4; // 40% expansion for scale break compensation
@@ -736,8 +736,11 @@ namespace AurisPianoTuner_measure.Services
 
             // Additional validation: Peak should be significantly stronger than neighbors
             // This ensures we have a real peak, not a noise plateau
+            // Scientific basis: For Blackman-Harris window, main lobe width is ~8 bins at -3dB
+            // Neighbors at Â±1 bin are typically 0.84Ã— peak magnitude for sinusoidal signals (-1.5 dB)
+            // Threshold reduced from 1.5 to 1.15 to accommodate window characteristics while rejecting noise
             double maxNeighbor = Math.Max(magPrev, magNext);
-            if (magPeak < 1.5 * maxNeighbor)
+            if (magPeak < 1.15 * maxNeighbor)
             {
                 // Not a clear peak - likely noise or sidelobe
                 System.Diagnostics.Debug.WriteLine(
@@ -1050,7 +1053,7 @@ namespace AurisPianoTuner_measure.Services
         /// <summary>Wound (copper-wrapped) bass strings - hogere inharmonicity</summary>
         WoundStrings = 1,
         
-        /// <summary>Critical transition zone (±1 semitone) - abrupte verandering in B-coefficient</summary>
+        /// <summary>Critical transition zone (ï¿½1 semitone) - abrupte verandering in B-coefficient</summary>
         Transition = 2,
         
         /// <summary>Plain steel strings - lagere inharmonicity, helderder spectrum</summary>
