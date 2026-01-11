@@ -29,6 +29,11 @@ namespace AurisPianoTuner_measure
         private DateTime _lastSignalTime = DateTime.MinValue;
         private const double SignalTimeoutSeconds = 2.0; // Na 2 sec stilte: stop wachten
 
+        // ===== KEYBOARD INTERACTION STATE =====
+        private int? _selectedKeyMidi = null; // Currently selected key for measurement
+        private Dictionary<int, Color> _keyColors = new(); // Color per measured key
+        private Dictionary<int, RectangleF> _keyRectangles = new(); // Hit detection rectangles
+
         public Form1()
         {
             InitializeComponent();
@@ -43,6 +48,7 @@ namespace AurisPianoTuner_measure
             _audioService.AudioDataAvailable += OnAudioDataAvailable;
             _fftAnalyzer.MeasurementUpdated += OnMeasurementUpdated;
             _fftAnalyzer.RawSpectrumUpdated += OnRawSpectrumUpdated;
+            _fftAnalyzer.MeasurementAutoStopped += OnMeasurementAutoStopped;
 
             // Wire testlogger aan analyzer
             _fftAnalyzer.TestLogger = _testLogger;
@@ -56,6 +62,10 @@ namespace AurisPianoTuner_measure
             // Window handlers
             this.Resize += Form1_Resize;
             this.FormClosing += Form1_FormClosing;
+
+            // Keyboard interaction handlers
+            pnlPianoKeyboard.MouseClick += PnlPianoKeyboard_MouseClick;
+            pnlPianoKeyboard.MouseDown += PnlPianoKeyboard_MouseDown;
         }
 
         protected override void WndProc(ref Message m)
@@ -246,15 +256,67 @@ namespace AurisPianoTuner_measure
         {
             // Update current spectrum data
             _currentSpectrumData = spectrumData;
-            
+
             // Thread-safe UI update voor spectrum visualizer
             if (InvokeRequired)
             {
                 BeginInvoke(() => UpdateSpectrumDisplay(spectrumData));
                 return;
             }
-            
+
             UpdateSpectrumDisplay(spectrumData);
+        }
+
+        private void OnMeasurementAutoStopped(object? sender, NoteMeasurement measurement)
+        {
+            // Thread-safe UI update
+            if (InvokeRequired)
+            {
+                BeginInvoke(() => HandleAutoStop(measurement));
+                return;
+            }
+
+            HandleAutoStop(measurement);
+        }
+
+        private void HandleAutoStop(NoteMeasurement measurement)
+        {
+            // Update display with final measurement
+            UpdateMeasurementDisplay(measurement);
+
+            // Auto-stop the recording
+            try
+            {
+                _audioService.Stop();
+                _fftAnalyzer.Reset();
+                _isRecording = false;
+
+                btnStart.Enabled = true;
+                btnStop.Enabled = false;
+                cmbAsioDriver.Enabled = true;
+
+                // Re-enable metadata editing
+                cmbPianoType.Enabled = true;
+                numPianoLength.Enabled = true;
+                numScaleBreak.Enabled = true;
+
+                // Update quality label
+                lblQuality.Text = $"Auto-stopped: {measurement.Quality} ({measurement.DetectedPartials.Count} partials) ✓";
+                lblQuality.ForeColor = measurement.Quality switch
+                {
+                    "Groen" => Color.Lime,
+                    "Oranje" => Color.Orange,
+                    "Rood" => Color.Red,
+                    _ => Color.Yellow
+                };
+
+                System.Diagnostics.Debug.WriteLine($"[Auto-Stop] Measurement completed and stopped for {measurement.NoteName}");
+            }
+            catch (Exception ex)
+            {
+                lblQuality.Text = $"Auto-stop error: {ex.Message}";
+                lblQuality.ForeColor = Color.Red;
+            }
         }
 
         // ===== UI UPDATE METHODS =====
@@ -262,27 +324,31 @@ namespace AurisPianoTuner_measure
         {
             lblSelectedNote.Text = measurement.NoteName;
             lblFrequency.Text = $"{measurement.CalculatedFundamental:F2} Hz";
-            
+
             // Calculate cents deviation from target frequency
             double centsDeviation = 1200 * Math.Log2(measurement.CalculatedFundamental / measurement.TargetFrequency);
             lblCents.Text = $"{centsDeviation:+0.0;-0.0} cents";
-            
+
             // ADD: Show number of detected partials (quality indicator)
             int partialCount = measurement.DetectedPartials.Count;
             lblQuality.Text = $"Quality: {measurement.Quality} ({partialCount} partials)";
-            
+
             // Color coding
-            lblQuality.ForeColor = measurement.Quality switch
+            Color qualityColor = measurement.Quality switch
             {
                 "Groen" => Color.Lime,
                 "Oranje" => Color.Orange,
                 "Rood" => Color.Red,
                 _ => Color.Yellow
             };
-            
+            lblQuality.ForeColor = qualityColor;
+
             // Opslaan in measurements dictionary
             _measurements[measurement.MidiIndex] = measurement;
-            
+
+            // Update key color voor visuele feedback op keyboard
+            _keyColors[measurement.MidiIndex] = qualityColor;
+
             // Trigger piano keyboard repaint (voor kleur indicaties)
             pnlPianoKeyboard.Invalidate();
         }
@@ -358,63 +424,63 @@ namespace AurisPianoTuner_measure
         {
             try
             {
-                // Update metadata
-                UpdatePianoMetadata();
-                
-                // Start ASIO audio
-                string selectedDriver = cmbAsioDriver.SelectedItem?.ToString() ?? string.Empty;
-                
-                if (string.IsNullOrEmpty(selectedDriver) || selectedDriver.Contains("Geen"))
+                // Check if a key is selected
+                if (!_selectedKeyMidi.HasValue)
                 {
-                    MessageBox.Show("Selecteer een geldige ASIO driver", 
-                                   "Fout", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    lblQuality.Text = "Please select a key first!";
+                    lblQuality.ForeColor = Color.Red;
                     return;
                 }
-                
+
+                // Update metadata
+                UpdatePianoMetadata();
+
+                // Start ASIO audio
+                string selectedDriver = cmbAsioDriver.SelectedItem?.ToString() ?? string.Empty;
+
+                if (string.IsNullOrEmpty(selectedDriver) || selectedDriver.Contains("Geen"))
+                {
+                    lblQuality.Text = "Select valid ASIO driver!";
+                    lblQuality.ForeColor = Color.Red;
+                    return;
+                }
+
                 _audioService.Start(selectedDriver, 96000);
-                
-                // Zet target note (start met A4)
-                _currentTargetMidi = 69; // A4
+
+                // Use selected key as target
+                _currentTargetMidi = _selectedKeyMidi.Value;
                 double targetFreq = PianoPhysics.MidiToFrequency(_currentTargetMidi);
                 _fftAnalyzer.SetTargetNote(_currentTargetMidi, targetFreq);
-                
+
                 // Update UI
                 lblSelectedNote.Text = PianoPhysics.MidiToNoteName(_currentTargetMidi);
                 lblFrequency.Text = $"{targetFreq:F2} Hz (target)";
                 lblCents.Text = "---";
-                lblQuality.Text = "Measuring...";
-                
+                lblQuality.Text = "Measuring... Play note loudly!";
+                lblQuality.ForeColor = Color.Yellow;
+
                 _isRecording = true;
                 btnStart.Enabled = false;
                 btnStop.Enabled = true;
                 cmbAsioDriver.Enabled = false;
-                
+
                 // Disable metadata editing during measurement
                 cmbPianoType.Enabled = false;
                 numPianoLength.Enabled = false;
                 numScaleBreak.Enabled = false;
-                
-                MessageBox.Show(
-                    "Measurement gestart!\n\n" +
-                    "BELANGRIJKE INSTRUCTIES:\n" +
-                    "1. Speel de noot A4 LUID genoeg (volume bar moet GROEN zijn)\n" +
-                    "2. Laat de noot 2-3 seconden resoneren\n" +
-                    "3. Houd achtergrondgeluid minimaal\n\n" +
-                    "De gele stippellijn in de volume bar toont de minimum vereiste volume.", 
-                    "Measurement Started", 
-                    MessageBoxButtons.OK, 
-                    MessageBoxIcon.Information);
+
+                // NO MORE DIALOG - immediate feedback
             }
             catch (NotSupportedException ex)
             {
-                MessageBox.Show(ex.Message, "ASIO Sample Rate Error", 
-                               MessageBoxButtons.OK, MessageBoxIcon.Error);
+                lblQuality.Text = $"ASIO Error: {ex.Message}";
+                lblQuality.ForeColor = Color.Red;
             }
             catch (Exception ex)
             {
-                MessageBox.Show($"Fout bij starten: {ex.Message}", 
-                               "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                
+                lblQuality.Text = $"Start error: {ex.Message}";
+                lblQuality.ForeColor = Color.Red;
+
                 // Reset UI state
                 btnStart.Enabled = true;
                 btnStop.Enabled = false;
@@ -429,25 +495,25 @@ namespace AurisPianoTuner_measure
                 _audioService.Stop();
                 _fftAnalyzer.Reset();
                 _isRecording = false;
-                
+
                 btnStart.Enabled = true;
                 btnStop.Enabled = false;
                 cmbAsioDriver.Enabled = true;
-                
+
                 // Re-enable metadata editing
                 cmbPianoType.Enabled = true;
                 numPianoLength.Enabled = true;
                 numScaleBreak.Enabled = true;
-                
-                lblQuality.Text = "Stopped";
-                
-                MessageBox.Show("Measurement gestopt", 
-                               "Info", MessageBoxButtons.OK, MessageBoxIcon.Information);
+
+                lblQuality.Text = "Stopped - Select another key to measure";
+                lblQuality.ForeColor = Color.Gray;
+
+                // NO MORE DIALOG - direct feedback
             }
             catch (Exception ex)
             {
-                MessageBox.Show($"Fout bij stoppen: {ex.Message}", 
-                               "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                lblQuality.Text = $"Stop error: {ex.Message}";
+                lblQuality.ForeColor = Color.Red;
             }
         }
 
@@ -732,14 +798,38 @@ namespace AurisPianoTuner_measure
                     float x = whiteKeyIndex * whiteKeyWidth;
                     RectangleF keyRect = new RectangleF(x, 0, whiteKeyWidth - 1, whiteKeyHeight);
 
-                    g.FillRectangle(Brushes.White, keyRect);
-                    g.DrawRectangle(Pens.Black,
-                                   keyRect.X, keyRect.Y,
-                                   keyRect.Width, keyRect.Height);
+                    // Determine key fill color
+                    Brush fillBrush = Brushes.White;
+                    if (_keyColors.TryGetValue(midiNote, out Color measurementColor))
+                    {
+                        // Key has been measured - use measurement quality color
+                        fillBrush = new SolidBrush(Color.FromArgb(100, measurementColor)); // Semi-transparent
+                    }
+
+                    g.FillRectangle(fillBrush, keyRect);
+
+                    // Draw border (selected key gets blue border)
+                    if (_selectedKeyMidi == midiNote)
+                    {
+                        using (Pen selectedPen = new Pen(Color.Blue, 3))
+                        {
+                            g.DrawRectangle(selectedPen, keyRect.X, keyRect.Y, keyRect.Width, keyRect.Height);
+                        }
+                    }
+                    else
+                    {
+                        g.DrawRectangle(Pens.Black, keyRect.X, keyRect.Y, keyRect.Width, keyRect.Height);
+                    }
+
+                    // Cleanup brush if created
+                    if (fillBrush != Brushes.White)
+                    {
+                        fillBrush.Dispose();
+                    }
 
                     // Voeg nootnaam toe op de witte toets
                     string noteName = GetNoteName(midiNote);
-                    
+
                     // Bepaal fontgrootte gebaseerd op toetsbreedte
                     float fontSize = Math.Max(8f, whiteKeyWidth * 0.15f);
                     using (Font font = new Font("Arial", fontSize, FontStyle.Bold))
@@ -750,7 +840,7 @@ namespace AurisPianoTuner_measure
                             SizeF textSize = g.MeasureString(noteName, font);
                             float textX = x + (whiteKeyWidth - textSize.Width) / 2;
                             float textY = whiteKeyHeight - textSize.Height - 5;
-                            
+
                             g.DrawString(noteName, font, textBrush, textX, textY);
                         }
                     }
@@ -775,10 +865,34 @@ namespace AurisPianoTuner_measure
                     float x = (whiteKeyIndex * whiteKeyWidth) - (blackKeyWidth / 2);
                     RectangleF keyRect = new RectangleF(x, 0, blackKeyWidth, blackKeyHeight);
 
-                    g.FillRectangle(Brushes.Black, keyRect);
-                    g.DrawRectangle(Pens.Black,
-                                   keyRect.X, keyRect.Y,
-                                   keyRect.Width, keyRect.Height);
+                    // Determine fill color for black keys
+                    Brush fillBrush = Brushes.Black;
+                    if (_keyColors.TryGetValue(midiNote, out Color measurementColor))
+                    {
+                        // Black key has been measured - darker semi-transparent color
+                        fillBrush = new SolidBrush(Color.FromArgb(150, measurementColor));
+                    }
+
+                    g.FillRectangle(fillBrush, keyRect);
+
+                    // Draw border (selected key gets blue border)
+                    if (_selectedKeyMidi == midiNote)
+                    {
+                        using (Pen selectedPen = new Pen(Color.Blue, 3))
+                        {
+                            g.DrawRectangle(selectedPen, keyRect.X, keyRect.Y, keyRect.Width, keyRect.Height);
+                        }
+                    }
+                    else
+                    {
+                        g.DrawRectangle(Pens.Black, keyRect.X, keyRect.Y, keyRect.Width, keyRect.Height);
+                    }
+
+                    // Cleanup brush if created
+                    if (fillBrush != Brushes.Black)
+                    {
+                        fillBrush.Dispose();
+                    }
                 }
             }
         }
@@ -799,11 +913,144 @@ namespace AurisPianoTuner_measure
         {
             // MIDI noot naar nootnaam en octaaf converteren
             string[] noteNames = { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
-            
+
             int noteInOctave = midiNote % 12;
             int octave = (midiNote / 12) - 1; // MIDI octaaf correctie
-            
+
             return noteNames[noteInOctave] + octave.ToString();
+        }
+
+        // ===== KEYBOARD MOUSE INTERACTION =====
+        private void PnlPianoKeyboard_MouseClick(object? sender, MouseEventArgs e)
+        {
+            // Find which key was clicked
+            int? clickedMidi = GetKeyAtPosition(e.X, e.Y);
+
+            if (clickedMidi.HasValue)
+            {
+                // Right click: delete measurement
+                if (e.Button == MouseButtons.Right)
+                {
+                    if (_measurements.ContainsKey(clickedMidi.Value))
+                    {
+                        _measurements.Remove(clickedMidi.Value);
+                        _keyColors.Remove(clickedMidi.Value);
+                        pnlPianoKeyboard.Invalidate();
+
+                        // Clear display if this was the selected key
+                        if (_selectedKeyMidi == clickedMidi.Value)
+                        {
+                            lblQuality.Text = "Measurement deleted";
+                            lblQuality.ForeColor = Color.Gray;
+                        }
+                    }
+                    return;
+                }
+
+                // Left click: select key and show details
+                _selectedKeyMidi = clickedMidi.Value;
+                _currentTargetMidi = clickedMidi.Value;
+
+                // Show details if measurement exists
+                if (_measurements.TryGetValue(clickedMidi.Value, out var measurement))
+                {
+                    DisplayMeasurementDetails(measurement);
+                }
+                else
+                {
+                    // Show selected note info
+                    double targetFreq = PianoPhysics.MidiToFrequency(clickedMidi.Value);
+                    lblSelectedNote.Text = PianoPhysics.MidiToNoteName(clickedMidi.Value);
+                    lblFrequency.Text = $"{targetFreq:F2} Hz (target)";
+                    lblCents.Text = "---";
+                    lblQuality.Text = "Ready to measure";
+                    lblQuality.ForeColor = Color.Yellow;
+                }
+
+                pnlPianoKeyboard.Invalidate();
+            }
+        }
+
+        private void PnlPianoKeyboard_MouseDown(object? sender, MouseEventArgs e)
+        {
+            // Handle mouse down for potential drag operations (future feature)
+        }
+
+        private int? GetKeyAtPosition(float x, float y)
+        {
+            // Piano: 88 keys (MIDI 21-108, A0 to C8)
+            int totalKeys = 88;
+            int startMidi = 21;
+            float whiteKeyWidth = pnlPianoKeyboard.Width / 52.0f;
+            float whiteKeyHeight = pnlPianoKeyboard.Height;
+            float blackKeyWidth = whiteKeyWidth * 0.6f;
+            float blackKeyHeight = whiteKeyHeight * 0.65f;
+
+            // Check black keys first (they're on top)
+            int whiteKeyIndex = 0;
+            for (int i = 0; i < totalKeys; i++)
+            {
+                int midiNote = startMidi + i;
+                bool isWhiteKey = IsWhiteKey(midiNote);
+
+                if (isWhiteKey)
+                {
+                    whiteKeyIndex++;
+                }
+                else // Black key
+                {
+                    float keyX = (whiteKeyIndex * whiteKeyWidth) - (blackKeyWidth / 2);
+                    RectangleF keyRect = new RectangleF(keyX, 0, blackKeyWidth, blackKeyHeight);
+
+                    if (keyRect.Contains(x, y))
+                    {
+                        return midiNote;
+                    }
+                }
+            }
+
+            // Check white keys
+            whiteKeyIndex = 0;
+            for (int i = 0; i < totalKeys; i++)
+            {
+                int midiNote = startMidi + i;
+                bool isWhiteKey = IsWhiteKey(midiNote);
+
+                if (isWhiteKey)
+                {
+                    float keyX = whiteKeyIndex * whiteKeyWidth;
+                    RectangleF keyRect = new RectangleF(keyX, 0, whiteKeyWidth - 1, whiteKeyHeight);
+
+                    if (keyRect.Contains(x, y))
+                    {
+                        return midiNote;
+                    }
+
+                    whiteKeyIndex++;
+                }
+            }
+
+            return null; // No key clicked
+        }
+
+        private void DisplayMeasurementDetails(NoteMeasurement measurement)
+        {
+            lblSelectedNote.Text = measurement.NoteName;
+            lblFrequency.Text = $"{measurement.CalculatedFundamental:F2} Hz";
+
+            double centsDeviation = 1200 * Math.Log2(measurement.CalculatedFundamental / measurement.TargetFrequency);
+            lblCents.Text = $"{centsDeviation:+0.0;-0.0} cents";
+
+            int partialCount = measurement.DetectedPartials.Count;
+            lblQuality.Text = $"{measurement.Quality} ({partialCount} partials) - Measured at {measurement.MeasuredAt:HH:mm:ss}";
+
+            lblQuality.ForeColor = measurement.Quality switch
+            {
+                "Groen" => Color.Lime,
+                "Oranje" => Color.Orange,
+                "Rood" => Color.Red,
+                _ => Color.Yellow
+            };
         }
     }
 }

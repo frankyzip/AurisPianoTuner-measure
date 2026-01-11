@@ -1,0 +1,84 @@
+{
+  "Version": "1.1",
+  "CreatedAt": "2026-01-11T22:04:26.1445567+01:00",
+  "SampleRate": 96000,
+  "FftSize": 32768,
+  "PianoMetadata": {
+    "Type": "Console",
+    "DimensionCm": 107,
+    "ScaleBreakMidiNote": 41,
+    "MeasurementDateTime": null,
+    "SerialNumber": "",
+    "LastTuningDate": null,
+    "Notes": ""
+  },
+  "Measurements": [
+    {
+      "NoteName": "A4",
+      "MidiIndex": 69,
+      "TargetFrequency": 440,
+      "DetectedPartials": [
+        {
+          "n": 1,
+          "Frequency": 439.9863738840033,
+          "Amplitude": 48.56373218987255
+        },
+        {
+          "n": 2,
+          "Frequency": 881.0302574060195,
+          "Amplitude": 34.53890855774166
+        },
+        {
+          "n": 3,
+          "Frequency": 1323.8166963609074,
+          "Amplitude": 30.607498958526044
+        },
+        {
+          "n": 4,
+          "Frequency": 1767.043474313858,
+          "Amplitude": 26.610746789255234
+        },
+        {
+          "n": 6,
+          "Frequency": 2668.239393578301,
+          "Amplitude": 27.055538954068243
+        },
+        {
+          "n": 9,
+          "Frequency": 3986.3367227263143,
+          "Amplitude": -14.35499531249933
+        },
+        {
+          "n": 11,
+          "Frequency": 4886.4404306223,
+          "Amplitude": -11.922619664260033
+        },
+        {
+          "n": 12,
+          "Frequency": 5276.474268924387,
+          "Amplitude": -18.167811755505742
+        },
+        {
+          "n": 13,
+          "Frequency": 5795.084186097139,
+          "Amplitude": 0.40509899515516823
+        },
+        {
+          "n": 15,
+          "Frequency": 6509.793081191131,
+          "Amplitude": -20.352972662263173
+        },
+        {
+          "n": 16,
+          "Frequency": 7025.911214164419,
+          "Amplitude": -15.491529162587668
+        }
+      ],
+      "Quality": "Groen",
+      "MeasuredPartialNumber": 1,
+      "CalculatedFundamental": 439.98417396863323,
+      "InharmonicityCoefficient": 1E-05,
+      "MeasuredAt": "2026-01-11T22:03:43.1719242+01:00"
+    }
+  ]
+}
