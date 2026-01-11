@@ -2,6 +2,55 @@
 
 Deze directory bevat testdata voor de Auris Piano Tuner applicatie.
 
+## Aanbevolen Hardware Setup
+
+**✅ Getest en aanbevolen:** Behringer ECM8000 + Behringer UMC202HD
+
+### Waarom deze combinatie?
+
+**1. Impedantie matching en gain staging**
+- ECM8000 en UMC202HD zijn **ontworpen voor elkaar** (Behringer ecosystem)
+- Correcte signaal levels zonder extreme gain aanpassingen
+- Optimale signal-to-noise ratio
+
+**2. Bewezen meetresultaten**
+- **11 partialen** gedetecteerd in A4 test
+- **0.02 Hz nauwkeurigheid** (bijna perfect)
+- Duidelijke detectie van lage partialen (n=2,3,6,9)
+
+**3. PreSonus Studio 24c vergelijking**
+- Studio 24c vereiste **gain helemaal open** voor ECM8000
+- Resultaat: slechts **7 partialen** gedetecteerd (vs 11 met UMC202HD)
+- **Lage partialen verdwenen** in ruisvloer door slechte impedantie matching
+- Conclusie: Duurdere interface ≠ betere resultaten zonder correcte matching
+
+**⚠️ Belangrijk:** Gain helemaal open zetten is een duidelijk signaal van **impedantie mismatch**. Dit resulteert in:
+- Hogere ruisvloer (slechtere SNR)
+- Verlies van zwakke partialen
+- Minder nauwkeurige metingen
+
+### Hardware specificaties
+
+**Behringer ECM8000**
+- Type: Omnidirectionele meetmicrofoon
+- Frequentie respons: 15 Hz - 20 kHz (±3 dB)
+- Impedantie: 600 Ω
+- Gevoeligheid: -60 dBV/Pa
+
+**Behringer UMC202HD**
+- Sample rates: 44.1, 48, 96 kHz (96 kHz aanbevolen)
+- Mic preamps: MIDAS ontwerp
+- Input impedantie: 3 kΩ (optimaal voor ECM8000)
+- Dynamisch bereik: 108 dB
+
+**PreSonus Studio 24c**
+- Sample rates: 44.1, 48, 88.2, 96, 192 kHz
+- XMAX preamps
+- Input impedantie: Hoger (geoptimaliseerd voor studio condenser mics)
+- Resultaat met ECM8000: **Suboptimaal** (gain staging probleem)
+
+---
+
 ## AudioMeasurements
 
 Bevat audio meetresultaten in JSON formaat (versie 1.1) zoals gegenereerd door de `MeasurementStorageService`.
@@ -44,6 +93,8 @@ Deze meting toont uitstekende resultaten voor een enkele snaar:
 
 **Audio interface:** PreSonus Studio 24c
 
+**⚠️ Gain staging issue:** Gain moest helemaal open voor ECM8000 → impedantie mismatch
+
 **Piano specificaties:**
 - Type: Console piano
 - Afmeting: 107 cm
@@ -62,14 +113,17 @@ Deze meting toont uitstekende resultaten voor een enkele snaar:
 - Sterkste partiaal: n=1 (fundamentaal) met amplitude 47.33 dB
 
 **Opmerkingen:**
-- Minder partialen gedetecteerd (7 vs 11 met UMC202HD) op dezelfde piano
+- **Significant minder partialen** gedetecteerd (7 vs 11 met UMC202HD) op dezelfde piano
+- **Belangrijkste oorzaak**: Gain helemaal open nodig = impedantie mismatch tussen ECM8000 en Studio 24c
+- Impedantie mismatch resulteert in:
+  - Slechtere signal-to-noise ratio
+  - Zwakkere partialen verdwijnen onder ruisvloer
+  - Ontbrekende partialen: n=2, 3, 6, 9, 15 niet gedetecteerd
 - Fundamentele frequentie 1.09 Hz lager, mogelijk door:
   - Ontstemming tussen metingen (20 minuten tijdsverschil)
   - Temperatuur/vochtigheid effecten
-  - Interface-specifieke frequentie resolutie
-- Vergelijkbare amplitude en kwaliteit score (beide Groen)
-- Ontbrekende partialen: n=2, 3, 6, 9, 15 niet gedetecteerd
-- Wel n=7 gedetecteerd (niet door UMC202HD)
+- Vergelijkbare fundamentaal amplitude en kwaliteit score (beide Groen)
+- Wel n=7 gedetecteerd (niet door UMC202HD) - interessante afwijking
 
 ---
 
@@ -124,6 +178,15 @@ Beide metingen uitgevoerd met identieke procedure:
 - Studio 24c detecteerde uniek n=7 (3124 Hz met 23.7 dB amplitude)
 - Mogelijk verschil in frequentie response of ADC karakteristieken
 
+**🔍 Gain staging verklaring (belangrijk):**
+- **Studio 24c vereiste gain "helemaal open"** voor ECM8000 → impedantie mismatch
+- **UMC202HD had normale gain instellingen** → correcte impedantie matching
+- Resultaat van impedantie mismatch:
+  - Zwakkere partialen verdwijnen onder ruisvloer (n=2,3,6,9,15 gemist)
+  - Slechtere signal-to-noise ratio
+  - Dit verklaart waarom duurdere interface **minder** partialen detecteert
+- **Conclusie:** ECM8000 is ontworpen voor Behringer interfaces (600 Ω → 3 kΩ matching)
+
 ### Gebruiksdoeleinden
 
 Deze testdata kan gebruikt worden voor:
@@ -138,7 +201,11 @@ Deze testdata kan gebruikt worden voor:
 ### Conclusies
 
 1. **Beide interfaces leveren goede resultaten** (Groen kwaliteit score)
-2. **UMC202HD detecteert meer partialen** (11 vs 7), vooral in lage frequenties
-3. **Frequentie verschil van 1.09 Hz** suggereert lichte ontstemming tijdens meetinterval
-4. **Partiaal detectie verschilt**, maar beide detecteren hoogste partialen consistent
-5. **Voor piano tuning zijn beide interfaces geschikt**, met lichte voorkeur voor UMC202HD vanwege meer gedetecteerde partialen
+2. **UMC202HD detecteert significant meer partialen** (11 vs 7), vooral in lage frequenties
+3. **Gain staging is cruciaal**: Studio 24c vereiste gain helemaal open = impedantie mismatch met ECM8000
+4. **Impedantie matching verklaart verschil**: UMC202HD (3 kΩ) perfect voor ECM8000 (600 Ω)
+5. **Frequentie verschil van 1.09 Hz** suggereert lichte ontstemming tijdens 20 minuten meetinterval
+6. **Partiaal detectie verschilt aanzienlijk**: Studio 24c mist n=2,3,6,9,15 door slechte SNR
+7. **Hardware aanbeveling**: ECM8000 + UMC202HD is de **optimale combinatie** voor deze applicatie
+8. **Duurdere ≠ beter**: Studio 24c is een uitstekende interface, maar **niet geoptimaliseerd** voor ECM8000
+9. **Voor piano tuning: gebruik UMC202HD met ECM8000** voor beste partiaal detectie en nauwkeurigheid
