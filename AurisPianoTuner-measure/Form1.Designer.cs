@@ -193,7 +193,16 @@
             this.btnLoad.Font = new System.Drawing.Font("Arial", 10F, System.Drawing.FontStyle.Bold);
             this.btnLoad.FlatStyle = System.Windows.Forms.FlatStyle.Flat;
             this.btnLoad.Click += new System.EventHandler(this.btnLoad_Click);
-            
+
+            // --- Version Label ---
+            this.lblVersion = new System.Windows.Forms.Label();
+            this.lblVersion.Text = "v1.0.0";
+            this.lblVersion.Location = new System.Drawing.Point(15, 815);
+            this.lblVersion.Size = new System.Drawing.Size(270, 25);
+            this.lblVersion.ForeColor = System.Drawing.Color.Gray;
+            this.lblVersion.Font = new System.Drawing.Font("Arial", 9F, System.Drawing.FontStyle.Regular);
+            this.lblVersion.TextAlign = System.Drawing.ContentAlignment.BottomLeft;
+
             this.pnlControls.Controls.Add(this.lblAsioDriver);
             this.pnlControls.Controls.Add(this.cmbAsioDriver);
             this.pnlControls.Controls.Add(this.grpMetadata);
@@ -201,6 +210,7 @@
             this.pnlControls.Controls.Add(this.btnStop);
             this.pnlControls.Controls.Add(this.btnSave);
             this.pnlControls.Controls.Add(this.btnLoad);
+            this.pnlControls.Controls.Add(this.lblVersion);
             
             // ===== CENTER PANEL (NOTE DISPLAY) =====
             this.pnlNoteDisplay = new System.Windows.Forms.Panel();
@@ -311,6 +321,7 @@
         private System.Windows.Forms.Button btnStop;
         private System.Windows.Forms.Button btnSave;
         private System.Windows.Forms.Button btnLoad;
+        private System.Windows.Forms.Label lblVersion;
         private System.Windows.Forms.Panel pnlNoteDisplay;
         private System.Windows.Forms.Label lblSelectedNote;
         private System.Windows.Forms.Label lblFrequency;
