@@ -1,0 +1,64 @@
+{
+  "Version": "1.1",
+  "CreatedAt": "2026-01-11T22:24:08.9264699+01:00",
+  "SampleRate": 96000,
+  "FftSize": 32768,
+  "PianoMetadata": {
+    "Type": "ParlorGrand",
+    "DimensionCm": 180,
+    "ScaleBreakMidiNote": 41,
+    "MeasurementDateTime": null,
+    "SerialNumber": "",
+    "LastTuningDate": null,
+    "Notes": ""
+  },
+  "Measurements": [
+    {
+      "NoteName": "A4",
+      "MidiIndex": 69,
+      "TargetFrequency": 440,
+      "DetectedPartials": [
+        {
+          "n": 1,
+          "Frequency": 438.89416604311685,
+          "Amplitude": 47.32845831647015
+        },
+        {
+          "n": 4,
+          "Frequency": 1768.5638284238278,
+          "Amplitude": 27.436825556127555
+        },
+        {
+          "n": 7,
+          "Frequency": 3123.552122339018,
+          "Amplitude": 23.72306236012722
+        },
+        {
+          "n": 11,
+          "Frequency": 4884.495401960288,
+          "Amplitude": -10.522474900090174
+        },
+        {
+          "n": 12,
+          "Frequency": 5276.28626362906,
+          "Amplitude": -17.77170418401472
+        },
+        {
+          "n": 13,
+          "Frequency": 5791.782403870394,
+          "Amplitude": -6.182947815963937
+        },
+        {
+          "n": 16,
+          "Frequency": 7125.164834826361,
+          "Amplitude": -24.72254838390233
+        }
+      ],
+      "Quality": "Groen",
+      "MeasuredPartialNumber": 1,
+      "CalculatedFundamental": 438.89197158874504,
+      "InharmonicityCoefficient": 1E-05,
+      "MeasuredAt": "2026-01-11T22:23:22.0850986+01:00"
+    }
+  ]
+}
