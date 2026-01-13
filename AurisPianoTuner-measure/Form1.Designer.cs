@@ -196,7 +196,7 @@
 
             // --- Version Label ---
             this.lblVersion = new System.Windows.Forms.Label();
-            this.lblVersion.Text = "v1.0.1";
+            this.lblVersion.Text = "v2.4";
             this.lblVersion.Location = new System.Drawing.Point(15, 815);
             this.lblVersion.Size = new System.Drawing.Size(270, 25);
             this.lblVersion.ForeColor = System.Drawing.Color.Gray;

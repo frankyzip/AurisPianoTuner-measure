@@ -54,6 +54,11 @@ namespace AurisPianoTuner_measure.Services
         private double _freqMin = 0;
         private double _freqMax = 0;
 
+        private int _activeFftSize = MaxFftSize; // Dynamically changes based on note register
+        private bool _isWaitingForAttack = true; // State machine for buffer reset
+        private bool _enableAveraging = true;    // Disabled for high treble (C5+)
+        private double _silenceThresholdDb = -50.0; // Threshold to arm the trigger
+
         public event EventHandler<NoteMeasurement>? MeasurementUpdated;
         public event EventHandler<NoteMeasurement>? MeasurementAutoStopped;
         public event EventHandler<FftSpectrumData>? RawSpectrumUpdated;
@@ -89,7 +94,7 @@ namespace AurisPianoTuner_measure.Services
         // ============================================================
         private static readonly Dictionary<int, (double minB, double typicalB, double maxB)> RegisterBRanges = new()
         {
-            // Deep Bass (A0-B1, MIDI 21-35): Wound strings, highest inharmonicity
+            // Deep Bass (A0-B1, MIDI 21-35: Wound strings, highest inharmonicity
             { 21, (0.0003, 0.0008, 0.003) },
             { 35, (0.0003, 0.0008, 0.003) },
             
@@ -141,14 +146,15 @@ namespace AurisPianoTuner_measure.Services
 
         /// <summary>
         /// Selects optimal FFT size based on MIDI note register.
+        /// ADJUSTED v2.3: More aggressive switching points for high notes
         /// </summary>
         private (int fftSize, double[] window) GetAdaptiveFftParameters(int midiNote)
         {
             return midiNote switch
             {
-                >= 79 => (SmallFftSize, _windowSmall),    // G5+ (784 Hz+): 85ms window
-                >= 72 => (MediumFftSize, _windowMedium),  // C5-F#5: 170ms window
-                _ => (MaxFftSize, _windowLarge)            // Below C5: 341ms window
+                >= 72 => (SmallFftSize, _windowSmall),    // C5 en hoger: Gebruik direct 85ms (vroeger pas bij C6)
+                >= 48 => (MediumFftSize, _windowMedium),  // C3 tot B4: Gebruik 170ms
+                _ => (MaxFftSize, _windowLarge)           // Alleen basnoten: 341ms voor maximale resolutie
             };
         }
 
@@ -160,26 +166,41 @@ namespace AurisPianoTuner_measure.Services
 
         public void SetTargetNote(int midiIndex, double theoreticalFrequency)
         {
+            // 1. Update basic target info
             _targetMidi = midiIndex;
             _targetFreq = theoreticalFrequency;
-            _bufferWritePos = 0;
+
+            // 2. ADAPTIVE FFT SIZING (The "Window Dilution" Fix)
+            // For C5 (Midi 72) and up, we must use smaller windows to catch the tone before it decays.
+            if (midiIndex >= 72) // C5+
+            {
+                _activeFftSize = SmallFftSize; // 8192 (~85ms)
+                _enableAveraging = false;      // Disable averaging to capture immediate attack
+            }
+            else if (midiIndex >= 48) // C3 - B4
+            {
+                _activeFftSize = MediumFftSize; // 16384 (~170ms)
+                _enableAveraging = true;
+            }
+            else // Bass (A0 - B2)
+            {
+                _activeFftSize = MaxFftSize;    // 32768 (~341ms)
+                _enableAveraging = true;
+            }
+
+            // 3. ARM THE TRIGGER (The "Buffer Pollution" Fix preparation)
+            _isWaitingForAttack = true;
+            Reset(); // Clear historical buffers
+
+            // 4. ACTIVATE MEASUREMENT & SET FILTER WINDOW
             _hasTarget = true;
+            _isMeasuring = true;
+            double windowCents = 50.0;
+            _freqMin = _targetFreq / Math.Pow(2, windowCents / 1200.0);
+            _freqMax = _targetFreq * Math.Pow(2, windowCents / 1200.0);
 
-            _freqMin = theoreticalFrequency * Math.Pow(2, -50.0 / 1200.0);
-            _freqMax = theoreticalFrequency * Math.Pow(2, 50.0 / 1200.0);
-
-            // Reset state for the new note
-            _measurementLocked = false;
-            _isMeasuring = false;
-            _consecutiveGoodMeasurements = 0;
-            _measurementBuffer.Clear();
-            _bestMeasurement = null;
-            _previousRms = -100.0; // Reset RMS baseline
-            _magnitudeFrameBuffer.Clear();
-            _bCoefficientHistory.Clear();
-            _smoothedB = GetHeuristicB(_targetMidi); // Initialize with register-appropriate B
-
-            System.Diagnostics.Debug.WriteLine($"[Target] Note set to {PianoPhysics.MidiToNoteName(midiIndex)} ({theoreticalFrequency:F2} Hz). Waiting for attack...");
+            // Debug info
+            Console.WriteLine($"[Analyzer] Target set: {midiIndex} ({theoreticalFrequency:F1}Hz). Window: {_activeFftSize}, Avg: {_enableAveraging}");
         }
 
         public void Reset()
@@ -198,41 +219,60 @@ namespace AurisPianoTuner_measure.Services
 
         public void ProcessAudioBuffer(float[] samples)
         {
-            if (!_hasTarget || _measurementLocked) return;
+            if (samples == null || samples.Length == 0) return;
 
-            // 1. Calculate RMS of the current block
-            double currentRms = CalculateRms(samples);
-            double deltaRms = currentRms - _previousRms;
-            _previousRms = currentRms;
+            // 1. ATTACK DETECTION & BUFFER HARD RESET (The "Buffer Pollution" Fix)
+            // We analyze the incoming chunk's RMS to see if a new note was struck.
+            double currentRmsDb = CalculateRms(samples);
 
-            // 2. Attack Detection: Trigger measurement on sudden volume spike
-            if (!_isMeasuring && deltaRms > AttackThresholdDb && currentRms > NoiseGateDb)
+            if (_isWaitingForAttack && currentRmsDb > -35.0) // Threshold for attack
             {
-                _isMeasuring = true;
-                _consecutiveGoodMeasurements = 0;
-                _measurementBuffer.Clear();
-                System.Diagnostics.Debug.WriteLine($"[Trigger] Attack detected for MIDI {_targetMidi} at {currentRms:F1} dB (Delta: {deltaRms:F1} dB)");
+                // HARD RESET: Discard all old data in the buffer.
+                // We set the write position to 0 effectively starting the recording 
+                // EXACTLY when the sound starts.
+                _bufferWritePos = 0;
+                _isWaitingForAttack = false; // Attack consumed, now we fill the buffer
+                // Notify UI or Logger if needed
+                // Console.WriteLine("[Analyzer] Attack Detected! Buffer Hard Reset.");
             }
 
-            // 3. Process buffer if measuring
-            var (fftSize, _) = GetAdaptiveFftParameters(_targetMidi);
-            
-            foreach (var sample in samples)
+            // 2. FILL CIRCULAR BUFFER
+            for (int i = 0; i < samples.Length; i++)
             {
-                _audioBuffer[_bufferWritePos++] = sample;
-
-                if (_bufferWritePos >= fftSize)
+                if (_bufferWritePos < _audioBuffer.Length)
                 {
-                    if (_isMeasuring)
-                    {
-                        Analyze();
-                    }
-
-                    // 50% Overlap for continuous spectral monitoring
-                    int half = fftSize / 2;
-                    Array.Copy(_audioBuffer, half, _audioBuffer, 0, half);
-                    _bufferWritePos = half;
+                    _audioBuffer[_bufferWritePos] = samples[i];
+                    _bufferWritePos++;
                 }
+                else
+                {
+                    // Safety: circle back (though we usually fire before this happens in the new logic)
+                    _bufferWritePos = 0;
+                    _audioBuffer[_bufferWritePos] = samples[i];
+                    _bufferWritePos++;
+                }
+            }
+
+            // 3. CHECK IF WE HAVE ENOUGH DATA FOR THE ACTIVE WINDOW
+            // Instead of always waiting for 32k samples, we now fire as soon as 
+            // we have enough for the selected register (e.g., 8k for treble).
+            if (_bufferWritePos >= _activeFftSize)
+            {
+                // We have a full window for the current register!
+                if (_isMeasuring)
+                {
+                    Analyze();
+                }
+                
+                // Overlap Logic:
+                // After analysis, we slide the window back. 
+                // For continuous measurement, we might keep 50% or 75% overlap.
+                // Here we do a simple 50% overlap reset for the next frame.
+                int overlap = _activeFftSize / 2;
+                
+                // Shift data: Move the last 'overlap' samples to the start of the buffer
+                Array.Copy(_audioBuffer, _activeFftSize - overlap, _audioBuffer, 0, overlap);
+                _bufferWritePos = overlap;
             }
         }
 
@@ -407,16 +447,15 @@ namespace AurisPianoTuner_measure.Services
             var finalMeasuredPartial = SelectBestPartialForMeasurement(detectedPartials, _targetMidi);
             result.MeasuredPartialNumber = finalMeasuredPartial?.n ?? 1;
 
-            if (isNearScaleBreak && scaleBreakRegion == ScaleBreakRegion.Transition)
+            // ADJUSTMENT v2.3: Quality logic with relaxed requirements for high notes
+            result.Quality = _targetMidi switch
             {
-                result.Quality = detectedPartials.Count > 7 ? "Groen" :
-                               detectedPartials.Count > 4 ? "Oranje" : "Rood";
-            }
-            else
-            {
-                result.Quality = detectedPartials.Count > 5 ? "Groen" :
-                               detectedPartials.Count > 2 ? "Oranje" : "Rood";
-            }
+                >= 84 => (detectedPartials.Count >= 1 ? "Groen" : "Rood"), // Top octaaf: 1 partial is genoeg
+                >= 72 => (detectedPartials.Count >= 2 ? "Groen" : "Oranje"), // Treble: 2 partials is genoeg
+                _ => (isNearScaleBreak && scaleBreakRegion == ScaleBreakRegion.Transition) ?
+                     (detectedPartials.Count > 7 ? "Groen" : detectedPartials.Count > 4 ? "Oranje" : "Rood") :
+                     (detectedPartials.Count > 5 ? "Groen" : detectedPartials.Count > 2 ? "Oranje" : "Rood")
+            };
 
             return FilterAndLogResult(result, isNearScaleBreak, scaleBreakRegion);
         }
@@ -781,20 +820,9 @@ namespace AurisPianoTuner_measure.Services
             double binFreq = (double)SampleRate / ZeroPaddedFftSize;
             int centerBin = (int)(targetFreq / binFreq);
 
-            double baseSearchCents = midiIndex switch
-            {
-                >= 84 => 10.0,
-                >= 72 => 12.0,
-                >= 60 => 15.0,
-                >= 48 => 20.0,
-                >= 36 => 25.0,
-                _ => 30.0
-            };
-
-            if (knownB.HasValue && knownB.Value > 0)
-            {
-                baseSearchCents *= 0.7;
-            }
+            // ADJUSTMENT: Wider search window for the first pass.
+            // When B is unknown we use 50 cents so slightly out-of-tune notes are still found.
+            double baseSearchCents = knownB.HasValue ? 20.0 : 50.0;
 
             if (isNearScaleBreak)
             {
@@ -916,7 +944,8 @@ namespace AurisPianoTuner_measure.Services
             double preciseFreq = (bestBin + d) * binFreq;
 
             double actualDeviation = Math.Abs(preciseFreq - targetFreq);
-            if (actualDeviation > searchWindowHz * 1.5)
+            double maxAllowedDeviationHz = searchWindowHz * 1.5;
+            if (actualDeviation > maxAllowedDeviationHz)
             {
                 return null;
             }
@@ -941,13 +970,13 @@ namespace AurisPianoTuner_measure.Services
             return region switch
             {
                 ScaleBreakRegion.WoundStrings when B < 0.0003 =>
-                    $"Low B ({B:E3}) for wound strings (expected 300-1000×10??)",
+                    $"Low B ({B:E3}) for wound strings (expected 300-100010??)",
                 ScaleBreakRegion.WoundStrings when B > 0.001 =>
-                    $"High B ({B:E3}) for wound strings (expected < 1000×10??)",
+                    $"High B ({B:E3}) for wound strings (expected < 100010??)",
                 ScaleBreakRegion.PlainStrings when B < 0.00005 =>
-                    $"Very low B ({B:E3}) for plain strings (expected 50-400×10??)",
+                    $"Very low B ({B:E3}) for plain strings (expected 50-40010??)",
                 ScaleBreakRegion.PlainStrings when B > 0.0005 =>
-                    $"High B ({B:E3}) for plain strings (expected < 500×10??)",
+                    $"High B ({B:E3}) for plain strings (expected < 50010??)",
                 ScaleBreakRegion.Transition =>
                     $"Transition zone: B={B:E3}",
                 _ => string.Empty
@@ -1057,19 +1086,23 @@ namespace AurisPianoTuner_measure.Services
         {
             _magnitudeFrameBuffer.Enqueue(currentMagnitudes);
 
-            while (_magnitudeFrameBuffer.Count > AveragingFrameCount)
+            // ADJUSTMENT: Use fewer frames for higher notes to prevent decay from killing the average
+            int framesToAverage = _targetMidi >= 72 ? 1 : AveragingFrameCount;
+
+            while (_magnitudeFrameBuffer.Count > framesToAverage)
             {
                 _magnitudeFrameBuffer.Dequeue();
             }
 
-            if (_magnitudeFrameBuffer.Count < MinFramesBeforeAnalysis)
+            int minFrames = framesToAverage > 1 ? MinFramesBeforeAnalysis : 1;
+            if (_magnitudeFrameBuffer.Count < minFrames)
             {
                 return currentMagnitudes;
             }
 
             int spectrumSize = currentMagnitudes.Length;
             double[] averagedMagnitudes = new double[spectrumSize];
-            int frameCount = _magnitudeFrameBuffer.Count;
+            int actualFrameCount = _magnitudeFrameBuffer.Count;
 
             foreach (var frame in _magnitudeFrameBuffer)
             {
@@ -1081,7 +1114,7 @@ namespace AurisPianoTuner_measure.Services
 
             for (int i = 0; i < spectrumSize; i++)
             {
-                averagedMagnitudes[i] /= frameCount;
+                averagedMagnitudes[i] /= actualFrameCount;
             }
 
             return averagedMagnitudes;

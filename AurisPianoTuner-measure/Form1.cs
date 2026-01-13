@@ -1049,27 +1049,60 @@ namespace AurisPianoTuner_measure
                     return;
                 }
 
-                // Left click: select key and show details
-                _selectedKeyMidi = clickedMidi.Value;
-                _currentTargetMidi = clickedMidi.Value;
-
-                // Show details if measurement exists
-                if (_measurements.TryGetValue(clickedMidi.Value, out var measurement))
-                {
-                    DisplayMeasurementDetails(measurement);
-                }
-                else
-                {
-                    // Show selected note info
-                    double targetFreq = PianoPhysics.MidiToFrequency(clickedMidi.Value);
-                    lblSelectedNote.Text = PianoPhysics.MidiToNoteName(clickedMidi.Value);
-                    lblFrequency.Text = $"{targetFreq:F2} Hz (target)";
-                    lblCents.Text = "---";
-                    lblQuality.Text = "Ready to measure";
-                    lblQuality.ForeColor = Color.Yellow;
-                }
+                // Left click: select key and show details OR start measuring new note
+                HandlePianoKeyClick(clickedMidi.Value);
 
                 pnlPianoKeyboard.Invalidate();
+            }
+        }
+
+        private void HandlePianoKeyClick(int midiNote)
+        {
+            // 1. CONTINUOUS WORKFLOW (The "Workflow" Fix)
+            // If the audio engine is already running, we DO NOT stop it.
+            // We only reset the analyzer for the new target.
+
+            _selectedKeyMidi = midiNote;
+            
+            bool isAudioRunning = _audioService.IsRunning;
+
+            // Update UI selection
+            _currentTargetMidi = midiNote;
+            double targetFreq = PianoPhysics.MidiToFrequency(midiNote);
+            lblSelectedNote.Text = PianoPhysics.MidiToNoteName(midiNote);
+            lblFrequency.Text = $"{targetFreq:F2} Hz (target)";
+            lblCents.Text = "---";
+            
+            if (_measurements.TryGetValue(midiNote, out var measurement) && !isAudioRunning)
+            {
+                DisplayMeasurementDetails(measurement);
+                return;
+            }
+            
+            // Prepare Metadata
+            UpdatePianoMetadata();
+
+            if (isAudioRunning)
+            {
+                // FAST PATH: Just switch target, keep ASIO running
+                _fftAnalyzer.SetTargetNote(midiNote, targetFreq);
+                
+                // Visual feedback that we switched
+                lblQuality.Text = "Listening... Play note!"; 
+                lblQuality.ForeColor = Color.Yellow;
+                
+                // Ensure UI is in recording state visually
+                _isRecording = true;
+                btnStart.Enabled = false;
+                btnStop.Enabled = true;
+                cmbAsioDriver.Enabled = false;
+                cmbPianoType.Enabled = false;
+            }
+            else
+            {
+                // COLD START: User hasn't pressed Start yet, so we just select it.
+                lblQuality.Text = "Ready to measure";
+                lblQuality.ForeColor = Color.Yellow;
             }
         }
 

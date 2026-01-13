@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 
 namespace AurisPianoTuner_measure.Utils
 {
@@ -55,6 +56,85 @@ namespace AurisPianoTuner_measure.Utils
         {
             double inharmonicityFactor = Math.Sqrt(1 + B * n * n);
             return fn / (n * inharmonicityFactor);
+        }
+
+        // ============================================================
+        // NIEUW: Inharmonicity (B) Heuristieken (v2.4)
+        // ============================================================
+        
+        private static readonly Dictionary<int, (double minB, double typicalB, double maxB)> RegisterBRanges = new()
+        {
+            // Deep Bass (A0-B1, MIDI 21-35)
+            { 21, (0.0003, 0.0008, 0.003) },
+            { 35, (0.0003, 0.0008, 0.003) },
+            
+            // Bass (C2-B2, MIDI 36-47)
+            { 36, (0.0002, 0.0005, 0.001) },
+            { 47, (0.0002, 0.0005, 0.001) },
+            
+            // Tenor (C3-C4, MIDI 48-60)
+            { 48, (0.0001, 0.0003, 0.0006) },
+            { 60, (0.0001, 0.0003, 0.0006) },
+            
+            // Mid-High (C#4-C5, MIDI 61-72)
+            { 61, (0.00005, 0.00015, 0.0003) },
+            { 72, (0.00005, 0.00015, 0.0003) },
+            
+            // Treble (C#5-C6, MIDI 73-84)
+            { 73, (0.00003, 0.0001, 0.0002) },
+            { 84, (0.00003, 0.0001, 0.0002) },
+            
+            // High Treble (C#6-C8, MIDI 85-108)
+            { 85, (0.00005, 0.00015, 0.0004) },
+            { 108, (0.0001, 0.0003, 0.001) }
+        };
+
+        /// <summary>
+        /// Haalt de typische inharmoniciteits-coëfficiënt (B) op voor een gegeven noot.
+        /// Gebaseerd op empirische data (Fletcher & Rossing).
+        /// </summary>
+        public static double GetTypicalInharmonicity(int midiNote)
+        {
+            midiNote = Math.Max(21, Math.Min(108, midiNote));
+
+            int[] boundaries = { 21, 35, 36, 47, 48, 60, 61, 72, 73, 84, 85, 108 };
+            
+            for (int i = 0; i < boundaries.Length - 1; i += 2)
+            {
+                int low = boundaries[i];
+                int high = boundaries[i + 1];
+                
+                if (midiNote >= low && midiNote <= high)
+                {
+                    return RegisterBRanges[low].typicalB;
+                }
+            }
+
+            return 0.0003; // Fallback
+        }
+
+        /// <summary>
+        /// Geeft het verwachte bereik (min, max) van B voor validatie.
+        /// </summary>
+        public static (double min, double max) GetInharmonicityRange(int midiNote)
+        {
+            midiNote = Math.Max(21, Math.Min(108, midiNote));
+            
+            int[] boundaries = { 21, 35, 36, 47, 48, 60, 61, 72, 73, 84, 85, 108 };
+            
+            for (int i = 0; i < boundaries.Length - 1; i += 2)
+            {
+                int low = boundaries[i];
+                int high = boundaries[i + 1];
+                
+                if (midiNote >= low && midiNote <= high)
+                {
+                    var range = RegisterBRanges[low];
+                    return (range.minB, range.maxB);
+                }
+            }
+            
+            return (0.0001, 0.001);
         }
     }
 }
