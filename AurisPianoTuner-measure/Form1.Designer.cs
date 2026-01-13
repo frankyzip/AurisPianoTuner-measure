@@ -196,12 +196,13 @@
 
             // --- Version Label ---
             this.lblVersion = new System.Windows.Forms.Label();
-            this.lblVersion.Text = "v1.0.0";
+            this.lblVersion.Text = "v1.0.1";
             this.lblVersion.Location = new System.Drawing.Point(15, 815);
             this.lblVersion.Size = new System.Drawing.Size(270, 25);
             this.lblVersion.ForeColor = System.Drawing.Color.Gray;
             this.lblVersion.Font = new System.Drawing.Font("Arial", 9F, System.Drawing.FontStyle.Regular);
             this.lblVersion.TextAlign = System.Drawing.ContentAlignment.BottomLeft;
+            this.lblVersion.Anchor = System.Windows.Forms.AnchorStyles.Bottom | System.Windows.Forms.AnchorStyles.Left;
 
             this.pnlControls.Controls.Add(this.lblAsioDriver);
             this.pnlControls.Controls.Add(this.cmbAsioDriver);

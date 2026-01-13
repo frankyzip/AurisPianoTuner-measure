@@ -14,20 +14,19 @@ namespace AurisPianoTuner_measure
         private readonly FftAnalyzerService _fftAnalyzer;
         private readonly MeasurementStorageService _storageService;
         private readonly TestLoggerService _testLogger;
-        
+
         // ===== STATE =====
         private Dictionary<int, NoteMeasurement> _measurements = new();
         private PianoMetadata _pianoMetadata = new();
         private int _currentTargetMidi = 69; // Start met A4
         private bool _isRecording = false;
         private double _currentVolumeDb = -60.0; // Current audio level in dB
+        private double _displayVolumeDb = -60.0; // Smoothed level used for UI drawing
         private FftSpectrumData? _currentSpectrumData = null; // Current spectrum for visualization
+        private NoteMeasurement? _currentMeasurement = null; // Current measurement for partial visualization
 
-        // ADD THESE NEW FIELDS FOR NOISE GATING:
-        private const double NoiseGateThresholdDb = -40.0; // Signaal moet boven -40 dB zijn
-        private bool _signalDetected = false;
-        private DateTime _lastSignalTime = DateTime.MinValue;
-        private const double SignalTimeoutSeconds = 2.0; // Na 2 sec stilte: stop wachten
+        private const double NoiseGateThresholdDb = -40.0; // Visual indicator for signal strength
+        private const double VolumeSmoothingFactor = 0.18; // UI smoothing coefficient
 
         // ===== KEYBOARD INTERACTION STATE =====
         private int? _selectedKeyMidi = null; // Currently selected key for measurement
@@ -66,6 +65,8 @@ namespace AurisPianoTuner_measure
             // Keyboard interaction handlers
             pnlPianoKeyboard.MouseClick += PnlPianoKeyboard_MouseClick;
             pnlPianoKeyboard.MouseDown += PnlPianoKeyboard_MouseDown;
+
+            EnableDoubleBuffering(pnlVolumeBar);
         }
 
         protected override void WndProc(ref Message m)
@@ -120,7 +121,7 @@ namespace AurisPianoTuner_measure
             {
                 _audioService.Stop();
             }
-            
+
             // Dispose services
             _audioService.Dispose();
         }
@@ -131,9 +132,9 @@ namespace AurisPianoTuner_measure
             try
             {
                 var drivers = _audioService.GetAsioDrivers().ToList();
-                
+
                 cmbAsioDriver.Items.Clear();
-                
+
                 if (drivers.Any())
                 {
                     foreach (var driver in drivers)
@@ -152,7 +153,7 @@ namespace AurisPianoTuner_measure
             }
             catch (Exception ex)
             {
-                MessageBox.Show($"Fout bij laden ASIO drivers: {ex.Message}", 
+                MessageBox.Show($"Fout bij laden ASIO drivers: {ex.Message}",
                                "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
@@ -165,7 +166,7 @@ namespace AurisPianoTuner_measure
                 DimensionCm = (int)numPianoLength.Value,
                 ScaleBreakMidiNote = (int)numScaleBreak.Value
             };
-            
+
             _fftAnalyzer.SetPianoMetadata(_pianoMetadata);
         }
 
@@ -188,55 +189,20 @@ namespace AurisPianoTuner_measure
         // ===== AUDIO PROCESSING EVENT HANDLERS =====
         private void OnAudioDataAvailable(object? sender, float[] samples)
         {
-            // Update volume bar (calculate RMS)
+            // Bereken RMS alleen voor de visuele volume bar
             double rms = CalculateRMS(samples);
             double db = 20 * Math.Log10(Math.Max(rms, 1e-6));
             _currentVolumeDb = db;
-            
-            // Thread-safe UI update voor volume bar (altijd tonen)
+            _displayVolumeDb += (db - _displayVolumeDb) * VolumeSmoothingFactor;
+
+            // UI update voor volume bar
             if (InvokeRequired)
-            {
                 BeginInvoke(() => pnlVolumeBar.Invalidate());
-            }
             else
-            {
                 pnlVolumeBar.Invalidate();
-            }
-            
-            // NOISE GATE: Alleen FFT analyse doen als signaal sterk genoeg is
-            if (db < NoiseGateThresholdDb)
-            {
-                // Signaal te zwak - negeer
-                if (_signalDetected)
-                {
-                    // Update UI: wacht op sterker signaal
-                    if (InvokeRequired)
-                    {
-                        BeginInvoke(() => UpdateWaitingStatus("Signal too weak - play louder"));
-                    }
-                    else
-                    {
-                        UpdateWaitingStatus("Signal too weak - play louder");
-                    }
-                }
-                return; // Skip FFT processing
-            }
-            
-            // Sterk genoeg signaal gedetecteerd
-            _signalDetected = true;
-            _lastSignalTime = DateTime.Now;
-            
-            // Update UI: analyzing
-            if (InvokeRequired)
-            {
-                BeginInvoke(() => UpdateWaitingStatus("Analyzing..."));
-            }
-            else
-            {
-                UpdateWaitingStatus("Analyzing...");
-            }
-            
-            // Stuur naar FFT analyzer
+
+            // Stuur ALTIJD de samples naar de analyzer. 
+            // De analyzer v2.1 beslist nu zelf (via AttackDetection) wanneer de meting start.
             _fftAnalyzer.ProcessAudioBuffer(samples);
         }
 
@@ -248,7 +214,7 @@ namespace AurisPianoTuner_measure
                 BeginInvoke(() => UpdateMeasurementDisplay(measurement));
                 return;
             }
-            
+
             UpdateMeasurementDisplay(measurement);
         }
 
@@ -281,47 +247,27 @@ namespace AurisPianoTuner_measure
 
         private void HandleAutoStop(NoteMeasurement measurement)
         {
-            // Update display with final measurement
+            // Update de lokale lijst
+            _measurements[measurement.MidiIndex] = measurement;
             UpdateMeasurementDisplay(measurement);
 
-            // Auto-stop the recording
-            try
-            {
-                _audioService.Stop();
-                _fftAnalyzer.Reset();
-                _isRecording = false;
+            // Audio feedback (Ping!)
+            System.Media.SystemSounds.Asterisk.Play();
 
-                btnStart.Enabled = true;
-                btnStop.Enabled = false;
-                cmbAsioDriver.Enabled = true;
+            // We stoppen de audioService NIET. De analyzer v2.1 staat nu op "Locked".
+            // De gebruiker kan nu rustig de resultaten bekijken.
+            // Zodra de gebruiker een nieuwe noot aanklikt, wordt de lock opgeheven.
 
-                // Re-enable metadata editing
-                cmbPianoType.Enabled = true;
-                numPianoLength.Enabled = true;
-                numScaleBreak.Enabled = true;
-
-                // Update quality label
-                lblQuality.Text = $"Auto-stopped: {measurement.Quality} ({measurement.DetectedPartials.Count} partials) ✓";
-                lblQuality.ForeColor = measurement.Quality switch
-                {
-                    "Groen" => Color.Lime,
-                    "Oranje" => Color.Orange,
-                    "Rood" => Color.Red,
-                    _ => Color.Yellow
-                };
-
-                System.Diagnostics.Debug.WriteLine($"[Auto-Stop] Measurement completed and stopped for {measurement.NoteName}");
-            }
-            catch (Exception ex)
-            {
-                lblQuality.Text = $"Auto-stop error: {ex.Message}";
-                lblQuality.ForeColor = Color.Red;
-            }
+            lblQuality.Text = $"METING VOLTOOID: {measurement.Quality} - Klik op de volgende noot";
+            pnlPianoKeyboard.Invalidate();
         }
 
         // ===== UI UPDATE METHODS =====
         private void UpdateMeasurementDisplay(NoteMeasurement measurement)
         {
+            // Store current measurement for partial visualization
+            _currentMeasurement = measurement;
+
             lblSelectedNote.Text = measurement.NoteName;
             lblFrequency.Text = $"{measurement.CalculatedFundamental:F2} Hz";
 
@@ -351,6 +297,9 @@ namespace AurisPianoTuner_measure
 
             // Trigger piano keyboard repaint (voor kleur indicaties)
             pnlPianoKeyboard.Invalidate();
+
+            // Trigger spectrum repaint voor partial markers
+            pnlSpectrum.Invalidate();
         }
 
         private void UpdateVolumeBar(double db)
@@ -523,35 +472,35 @@ namespace AurisPianoTuner_measure
             {
                 if (_measurements.Count == 0)
                 {
-                    MessageBox.Show("Geen metingen om op te slaan", 
+                    MessageBox.Show("Geen metingen om op te slaan",
                                    "Waarschuwing", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                     return;
                 }
-                
+
                 using var saveDialog = new SaveFileDialog
                 {
                     Filter = "JSON files (*.json)|*.json|All files (*.*)|*.*",
                     DefaultExt = "json",
                     FileName = $"Measurements_{_pianoMetadata.Type}_{DateTime.Now:yyyyMMdd_HHmm}.json"
                 };
-                
+
                 if (saveDialog.ShowDialog() == DialogResult.OK)
                 {
                     await _storageService.SaveMeasurementsAsync(
-                        saveDialog.FileName, 
-                        _measurements, 
+                        saveDialog.FileName,
+                        _measurements,
                         _pianoMetadata);
-                    
+
                     // Save test log
                     await _testLogger.SaveSessionLogAsync(_pianoMetadata.Type.ToString());
-                    
-                    MessageBox.Show($"Metingen opgeslagen naar:\n{saveDialog.FileName}", 
+
+                    MessageBox.Show($"Metingen opgeslagen naar:\n{saveDialog.FileName}",
                                    "Opgeslagen", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 }
             }
             catch (Exception ex)
             {
-                MessageBox.Show($"Fout bij opslaan: {ex.Message}", 
+                MessageBox.Show($"Fout bij opslaan: {ex.Message}",
                                "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
@@ -565,33 +514,33 @@ namespace AurisPianoTuner_measure
                     Filter = "JSON files (*.json)|*.json|All files (*.*)|*.*",
                     DefaultExt = "json"
                 };
-                
+
                 if (openDialog.ShowDialog() == DialogResult.OK)
                 {
                     var (measurements, metadata) = await _storageService.LoadMeasurementsAsync(openDialog.FileName);
-                    
+
                     _measurements = measurements;
-                    
+
                     if (metadata != null)
                     {
                         _pianoMetadata = metadata;
-                        
+
                         // Update UI met geladen metadata
                         // txtPianoType.Text = metadata.Type; // Als u txtPianoType gebruikt
                         numPianoLength.Value = metadata.DimensionCm;
                         numScaleBreak.Value = metadata.ScaleBreakMidiNote;
                     }
-                    
+
                     // Repaint piano keyboard met loaded data
                     pnlPianoKeyboard.Invalidate();
-                    
-                    MessageBox.Show($"Metingen geladen:\n{measurements.Count} noten\n\nPiano: {metadata?.Type}", 
+
+                    MessageBox.Show($"Metingen geladen:\n{measurements.Count} noten\n\nPiano: {metadata?.Type}",
                                    "Geladen", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 }
             }
             catch (Exception ex)
             {
-                MessageBox.Show($"Fout bij laden: {ex.Message}", 
+                MessageBox.Show($"Fout bij laden: {ex.Message}",
                                "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
@@ -605,27 +554,27 @@ namespace AurisPianoTuner_measure
             // Convert dB to percentage (range: -60 dB to 0 dB)
             double dbMin = -60.0;
             double dbMax = 0.0;
-            double dbNormalized = Math.Max(0, Math.Min(1, (_currentVolumeDb - dbMin) / (dbMax - dbMin)));
-            
+            double dbNormalized = Math.Max(0, Math.Min(1, (_displayVolumeDb - dbMin) / (dbMax - dbMin)));
+
             int barWidth = (int)(pnlVolumeBar.Width * dbNormalized);
-            
+
             // Color coding based on level
             Brush barBrush;
-            if (_currentVolumeDb > -10) // Too loud (clipping risk)
+            if (_displayVolumeDb > -10) // Too loud (clipping risk)
                 barBrush = Brushes.Red;
-            else if (_currentVolumeDb > NoiseGateThresholdDb) // Above gate = Good signal
+            else if (_displayVolumeDb > -40) // Above gate = Good signal
                 barBrush = Brushes.Lime;
-            else if (_currentVolumeDb > -50) // Below gate but visible
+            else if (_displayVolumeDb > -50) // Below gate but visible
                 barBrush = Brushes.DarkOrange;
             else // Too quiet
                 barBrush = Brushes.DarkGray;
-            
+
             // Draw volume bar
             if (barWidth > 0)
             {
                 g.FillRectangle(barBrush, 0, 0, barWidth, pnlVolumeBar.Height);
             }
-            
+
             // Draw NOISE GATE THRESHOLD line (visual indicator)
             double gateNormalized = (NoiseGateThresholdDb - dbMin) / (dbMax - dbMin);
             int gateX = (int)(pnlVolumeBar.Width * gateNormalized);
@@ -634,7 +583,7 @@ namespace AurisPianoTuner_measure
                 gatePen.DashStyle = System.Drawing.Drawing2D.DashStyle.Dash;
                 g.DrawLine(gatePen, gateX, 0, gateX, pnlVolumeBar.Height);
             }
-            
+
             // Draw grid lines (dB markers)
             using (Pen gridPen = new Pen(Color.FromArgb(80, 80, 80)))
             {
@@ -644,26 +593,26 @@ namespace AurisPianoTuner_measure
                     g.DrawLine(gridPen, x, 0, x, pnlVolumeBar.Height);
                 }
             }
-            
+
             // Draw dB value text
-            string dbText = $"{_currentVolumeDb:F1} dB";
+            string dbText = $"{_displayVolumeDb:F1} dB";
             using (Font font = new Font("Arial", 10, FontStyle.Bold))
             {
                 SizeF textSize = g.MeasureString(dbText, font);
                 float textX = pnlVolumeBar.Width - textSize.Width - 5;
                 float textY = (pnlVolumeBar.Height - textSize.Height) / 2;
-                
+
                 // Draw text with black outline for readability
                 using (GraphicsPath path = new GraphicsPath())
                 {
                     path.AddString(dbText, font.FontFamily, (int)font.Style, font.Size,
                                   new PointF(textX, textY), StringFormat.GenericDefault);
-                    
+
                     g.DrawPath(new Pen(Color.Black, 3), path);
                     g.FillPath(Brushes.White, path);
                 }
             }
-            
+
             // Draw "GATE" label at threshold
             using (Font smallFont = new Font("Arial", 8, FontStyle.Bold))
             {
@@ -675,6 +624,7 @@ namespace AurisPianoTuner_measure
         {
             Graphics g = e.Graphics;
             g.Clear(Color.Black);
+            g.SmoothingMode = SmoothingMode.AntiAlias;
 
             if (_currentSpectrumData == null || _currentSpectrumData.Magnitudes.Length == 0)
             {
@@ -687,7 +637,7 @@ namespace AurisPianoTuner_measure
                         g.DrawLine(gridPen, 0, y, pnlSpectrum.Width, y);
                     }
                 }
-                
+
                 // Draw "Waiting for audio..." text
                 string waitText = _isRecording ? "Waiting for audio signal..." : "Press START to begin";
                 using (Font font = new Font("Arial", 14, FontStyle.Bold))
@@ -704,70 +654,160 @@ namespace AurisPianoTuner_measure
             double[] magnitudes = _currentSpectrumData.Magnitudes;
             double freqResolution = _currentSpectrumData.FrequencyResolution;
             double targetFreq = _currentSpectrumData.TargetFrequency;
-            
-            // Calculate frequency range to display (3 octaves around target)
+
+            // Calculate frequency range to display (full range for partials: f0/2 to 16*f0)
             double freqMin = targetFreq / 2.0;  // One octave below
-            double freqMax = targetFreq * 4.0;  // Two octaves above
-            
+            double freqMax = targetFreq * 18.0; // Cover up to 16th partial plus margin
+
             int binMin = (int)(freqMin / freqResolution);
             int binMax = (int)(freqMax / freqResolution);
             binMin = Math.Max(0, binMin);
             binMax = Math.Min(magnitudes.Length - 1, binMax);
-            
+
             if (binMax <= binMin) return;
-            
+
             // Find max magnitude in visible range for scaling
             double maxMag = 0;
             for (int i = binMin; i <= binMax; i++)
             {
                 if (magnitudes[i] > maxMag) maxMag = magnitudes[i];
             }
-            
+
             if (maxMag < 1e-10) return; // No signal
-            
-            // Draw spectrum bars
-            int visibleBins = binMax - binMin + 1;
-            float barWidth = (float)pnlSpectrum.Width / visibleBins;
-            
+
+            // Use logarithmic frequency scale for better partial spread
+            double logFreqMin = Math.Log10(freqMin);
+            double logFreqMax = Math.Log10(freqMax);
+            double logFreqRange = logFreqMax - logFreqMin;
+
+            // Draw spectrum with logarithmic frequency scale
             for (int i = binMin; i <= binMax; i++)
             {
+                double freq = i * freqResolution;
+                double logFreq = Math.Log10(freq);
+                double normalizedLogFreq = (logFreq - logFreqMin) / logFreqRange;
+
                 double mag = magnitudes[i];
                 double normalizedMag = mag / maxMag;
-                
-                int barHeight = (int)(normalizedMag * pnlSpectrum.Height * 0.9);
-                int x = (int)((i - binMin) * barWidth);
+
+                int barHeight = (int)(normalizedMag * pnlSpectrum.Height * 0.85);
+                int x = (int)(normalizedLogFreq * pnlSpectrum.Width);
                 int y = pnlSpectrum.Height - barHeight;
-                
-                // Color based on magnitude
-                Color barColor;
-                if (normalizedMag > 0.7)
-                    barColor = Color.FromArgb(255, 50, 50); // Red for peaks
-                else if (normalizedMag > 0.3)
-                    barColor = Color.FromArgb(50, 255, 50); // Green for medium
-                else
-                    barColor = Color.FromArgb(50, 150, 255); // Blue for low
-                
+
+                // Color based on magnitude (blue spectrum)
+                int intensity = (int)(normalizedMag * 200) + 55;
+                Color barColor = Color.FromArgb(50, 100, intensity);
+
                 using (SolidBrush brush = new SolidBrush(barColor))
                 {
-                    g.FillRectangle(brush, x, y, Math.Max(1, barWidth - 1), barHeight);
+                    g.FillRectangle(brush, x, y, 2, barHeight);
                 }
             }
-            
-            // Draw target frequency marker
-            int targetBin = (int)(targetFreq / freqResolution);
-            if (targetBin >= binMin && targetBin <= binMax)
+
+            // Draw target frequency marker (fundamental)
+            double targetLogFreq = Math.Log10(targetFreq);
+            double normalizedTargetLogFreq = (targetLogFreq - logFreqMin) / logFreqRange;
+            int targetX = (int)(normalizedTargetLogFreq * pnlSpectrum.Width);
+
+            using (Pen markerPen = new Pen(Color.Yellow, 2))
             {
-                int targetX = (int)((targetBin - binMin) * barWidth);
-                using (Pen markerPen = new Pen(Color.Yellow, 2))
+                g.DrawLine(markerPen, targetX, 0, targetX, pnlSpectrum.Height);
+            }
+
+            // Draw frequency label for target
+            string targetLabel = $"{targetFreq:F1} Hz";
+            using (Font font = new Font("Arial", 9, FontStyle.Bold))
+            {
+                g.DrawString(targetLabel, font, Brushes.Yellow, targetX + 3, 5);
+            }
+
+            // ===== DRAW DETECTED PARTIALS =====
+            if (_currentMeasurement != null && _currentMeasurement.DetectedPartials.Count > 0)
+            {
+                // Find max amplitude for normalization
+                double maxAmplitude = _currentMeasurement.DetectedPartials.Max(p => p.Amplitude);
+                double minAmplitude = _currentMeasurement.DetectedPartials.Min(p => p.Amplitude);
+                double amplitudeRange = maxAmplitude - minAmplitude;
+                if (amplitudeRange < 1) amplitudeRange = 1;
+
+                using (Font labelFont = new Font("Arial", 8, FontStyle.Bold))
+                using (Font freqFont = new Font("Arial", 7, FontStyle.Regular))
+                using (Pen partialPen = new Pen(Color.Lime, 2))
+                using (Pen partialPenWeak = new Pen(Color.FromArgb(100, 150, 255), 2))
                 {
-                    g.DrawLine(markerPen, targetX, 0, targetX, pnlSpectrum.Height);
+                    foreach (var partial in _currentMeasurement.DetectedPartials.OrderBy(p => p.n))
+                    {
+                        double partialLogFreq = Math.Log10(partial.Frequency);
+                        double normalizedPartialLogFreq = (partialLogFreq - logFreqMin) / logFreqRange;
+
+                        // Skip if outside visible range
+                        if (normalizedPartialLogFreq < 0 || normalizedPartialLogFreq > 1)
+                            continue;
+
+                        int partialX = (int)(normalizedPartialLogFreq * pnlSpectrum.Width);
+
+                        // Calculate height based on amplitude (normalized to 0-1)
+                        double normalizedAmplitude = (partial.Amplitude - minAmplitude) / amplitudeRange;
+                        int barHeight = (int)(normalizedAmplitude * pnlSpectrum.Height * 0.75) + (int)(pnlSpectrum.Height * 0.1);
+                        int barY = pnlSpectrum.Height - barHeight;
+
+                        // Color: green for strong, blue for weak, red for fundamental
+                        Color partialColor;
+                        if (partial.n == 1)
+                            partialColor = Color.Red;
+                        else if (normalizedAmplitude > 0.5)
+                            partialColor = Color.Lime;
+                        else
+                            partialColor = Color.FromArgb(100, 180, 255);
+
+                        using (Pen pen = new Pen(partialColor, 3))
+                        {
+                            g.DrawLine(pen, partialX, barY, partialX, pnlSpectrum.Height);
+                        }
+
+                        // Draw partial number label at top
+                        string nLabel = $"n={partial.n}";
+                        SizeF nSize = g.MeasureString(nLabel, labelFont);
+                        float labelX = partialX - nSize.Width / 2;
+                        labelX = Math.Max(2, Math.Min(pnlSpectrum.Width - nSize.Width - 2, labelX));
+
+                        using (SolidBrush bgBrush = new SolidBrush(Color.FromArgb(180, 0, 0, 0)))
+                        {
+                            g.FillRectangle(bgBrush, labelX - 2, barY - nSize.Height - 2, nSize.Width + 4, nSize.Height + 2);
+                        }
+                        using (SolidBrush textBrush = new SolidBrush(partialColor))
+                        {
+                            g.DrawString(nLabel, labelFont, textBrush, labelX, barY - nSize.Height - 1);
+                        }
+
+                        // Draw frequency label at bottom
+                        string freqLabel = $"{partial.Frequency:F0} Hz";
+                        SizeF freqSize = g.MeasureString(freqLabel, freqFont);
+                        float freqLabelX = partialX - freqSize.Width / 2;
+                        freqLabelX = Math.Max(2, Math.Min(pnlSpectrum.Width - freqSize.Width - 2, freqLabelX));
+                        float freqLabelY = pnlSpectrum.Height - freqSize.Height - 3;
+
+                        using (SolidBrush bgBrush = new SolidBrush(Color.FromArgb(180, 0, 0, 0)))
+                        {
+                            g.FillRectangle(bgBrush, freqLabelX - 2, freqLabelY - 1, freqSize.Width + 4, freqSize.Height + 2);
+                        }
+                        g.DrawString(freqLabel, freqFont, Brushes.White, freqLabelX, freqLabelY);
+                    }
                 }
-                
-                // Draw frequency label
-                string freqLabel = $"{targetFreq:F1} Hz";
-                using (Font font = new Font("Arial", 9, FontStyle.Bold))
+
+                // Draw legend in top-right corner
+                int legendX = pnlSpectrum.Width - 180;
+                int legendY = 10;
+                using (Font legendFont = new Font("Arial", 9, FontStyle.Regular))
                 {
-                    g.DrawString(freqLabel, font, Brushes.Yellow, targetX + 3, 5);
+                    g.FillRectangle(new SolidBrush(Color.FromArgb(200, 0, 0, 0)), legendX - 5, legendY - 5, 175, 75);
+                    g.DrawString($"Partials: {_currentMeasurement.DetectedPartials.Count}", legendFont, Brushes.White, legendX, legendY);
+                    g.DrawString($"f₀: {_currentMeasurement.CalculatedFundamental:F2} Hz", legendFont, Brushes.Cyan, legendX, legendY + 18);
+                    g.DrawString($"B: {_currentMeasurement.InharmonicityCoefficient:E2}", legendFont, Brushes.Yellow, legendX, legendY + 36);
+                    g.DrawString($"Quality: {_currentMeasurement.Quality}", legendFont,
+                        _currentMeasurement.Quality == "Groen" ? Brushes.Lime :
+                        _currentMeasurement.Quality == "Oranje" ? Brushes.Orange : Brushes.Red,
+                        legendX, legendY + 54);
                 }
             }
         }
@@ -798,28 +838,53 @@ namespace AurisPianoTuner_measure
                     float x = whiteKeyIndex * whiteKeyWidth;
                     RectangleF keyRect = new RectangleF(x, 0, whiteKeyWidth - 1, whiteKeyHeight);
 
-                    // Determine key fill color
+                    // ===== AANPASSING IN DE LUS VAN pnlPianoKeyboard_Paint =====
+                    // 1. Standaardkleur bepalen
                     Brush fillBrush = Brushes.White;
-                    if (_keyColors.TryGetValue(midiNote, out Color measurementColor))
+
+                    // 2. Kleur bepalen op basis van meting (indien aanwezig)
+                    if (_measurements.TryGetValue(midiNote, out var m))
                     {
-                        // Key has been measured - use measurement quality color
-                        fillBrush = new SolidBrush(Color.FromArgb(100, measurementColor)); // Semi-transparent
+                        Color qualityColor = m.Quality switch
+                        {
+                            "Groen" => Color.FromArgb(150, 0, 255, 0),
+                            "Oranje" => Color.FromArgb(150, 255, 165, 0),
+                            "Rood" => Color.FromArgb(150, 255, 0, 0),
+                            _ => Color.FromArgb(150, Color.Yellow)
+                        };
+                        fillBrush = new SolidBrush(qualityColor);
+                    }
+
+                    // 3. Speciale status voor de geselecteerde toets
+                    if (_selectedKeyMidi == midiNote)
+                    {
+                        // Als we nog NIET klaar zijn met meten: toon blauw
+                        if (!_fftAnalyzer.IsMeasurementLocked)
+                        {
+                            if (fillBrush != Brushes.White) fillBrush.Dispose();
+                            fillBrush = new SolidBrush(Color.LightSkyBlue);
+                        }
+                        // Als we WEL klaar zijn (Locked): behoud de kwaliteitskleur
+                        // maar teken er een dikke Cyaan rand omheen ter indicatie van selectie.
+                        using (Pen selectionPen = new Pen(Color.Cyan, 3))
+                        {
+                            g.DrawRectangle(selectionPen, keyRect.X + 1, keyRect.Y + 1, keyRect.Width - 2, keyRect.Height - 2);
+                        }
                     }
 
                     g.FillRectangle(fillBrush, keyRect);
 
-                    // Draw border (selected key gets blue border)
+                    // 3. Highlight de rand met Cyaan voor geselecteerde toets
                     if (_selectedKeyMidi == midiNote)
                     {
-                        using (Pen selectedPen = new Pen(Color.Blue, 3))
+                        using (Pen selectionPen = new Pen(Color.Cyan, 3))
                         {
-                            g.DrawRectangle(selectedPen, keyRect.X, keyRect.Y, keyRect.Width, keyRect.Height);
+                            g.DrawRectangle(selectionPen, keyRect.X + 1, keyRect.Y + 1, keyRect.Width - 2, keyRect.Height - 2);
                         }
                     }
-                    else
-                    {
-                        g.DrawRectangle(Pens.Black, keyRect.X, keyRect.Y, keyRect.Width, keyRect.Height);
-                    }
+
+                    // Draw normal black border for all keys
+                    g.DrawRectangle(Pens.Black, keyRect.X, keyRect.Y, keyRect.Width, keyRect.Height);
 
                     // Cleanup brush if created
                     if (fillBrush != Brushes.White)
@@ -865,28 +930,53 @@ namespace AurisPianoTuner_measure
                     float x = (whiteKeyIndex * whiteKeyWidth) - (blackKeyWidth / 2);
                     RectangleF keyRect = new RectangleF(x, 0, blackKeyWidth, blackKeyHeight);
 
-                    // Determine fill color for black keys
+                    // ===== AANPASSING IN DE LUS VAN pnlPianoKeyboard_Paint =====
+                    // 1. Standaardkleur bepalen
                     Brush fillBrush = Brushes.Black;
-                    if (_keyColors.TryGetValue(midiNote, out Color measurementColor))
+
+                    // 2. Kleur bepalen op basis van meting (indien aanwezig)
+                    if (_measurements.TryGetValue(midiNote, out var m))
                     {
-                        // Black key has been measured - darker semi-transparent color
-                        fillBrush = new SolidBrush(Color.FromArgb(150, measurementColor));
+                        Color qualityColor = m.Quality switch
+                        {
+                            "Groen" => Color.FromArgb(150, 0, 255, 0),
+                            "Oranje" => Color.FromArgb(150, 255, 165, 0),
+                            "Rood" => Color.FromArgb(150, 255, 0, 0),
+                            _ => Color.FromArgb(150, Color.Yellow)
+                        };
+                        fillBrush = new SolidBrush(qualityColor);
+                    }
+
+                    // 3. Speciale status voor de geselecteerde toets
+                    if (_selectedKeyMidi == midiNote)
+                    {
+                        // Als we nog NIET klaar zijn met meten: toon blauw
+                        if (!_fftAnalyzer.IsMeasurementLocked)
+                        {
+                            if (fillBrush != Brushes.Black) fillBrush.Dispose();
+                            fillBrush = new SolidBrush(Color.LightSkyBlue);
+                        }
+                        // Als we WEL klaar zijn (Locked): behoud de kwaliteitskleur
+                        // maar teken er een dikke Cyaan rand omheen ter indicatie van selectie.
+                        using (Pen selectionPen = new Pen(Color.Cyan, 3))
+                        {
+                            g.DrawRectangle(selectionPen, keyRect.X + 1, keyRect.Y + 1, keyRect.Width - 2, keyRect.Height - 2);
+                        }
                     }
 
                     g.FillRectangle(fillBrush, keyRect);
 
-                    // Draw border (selected key gets blue border)
+                    // 3. Highlight de rand met Cyaan voor geselecteerde toets
                     if (_selectedKeyMidi == midiNote)
                     {
-                        using (Pen selectedPen = new Pen(Color.Blue, 3))
+                        using (Pen selectionPen = new Pen(Color.Cyan, 3))
                         {
-                            g.DrawRectangle(selectedPen, keyRect.X, keyRect.Y, keyRect.Width, keyRect.Height);
+                            g.DrawRectangle(selectionPen, keyRect.X + 1, keyRect.Y + 1, keyRect.Width - 2, keyRect.Height - 2);
                         }
                     }
-                    else
-                    {
-                        g.DrawRectangle(Pens.Black, keyRect.X, keyRect.Y, keyRect.Width, keyRect.Height);
-                    }
+
+                    // Draw normal black border for all keys
+                    g.DrawRectangle(Pens.Black, keyRect.X, keyRect.Y, keyRect.Width, keyRect.Height);
 
                     // Cleanup brush if created
                     if (fillBrush != Brushes.Black)
@@ -933,15 +1023,27 @@ namespace AurisPianoTuner_measure
                 {
                     if (_measurements.ContainsKey(clickedMidi.Value))
                     {
-                        _measurements.Remove(clickedMidi.Value);
-                        _keyColors.Remove(clickedMidi.Value);
-                        pnlPianoKeyboard.Invalidate();
+                        // Show confirmation dialog before deleting
+                        string noteName = PianoPhysics.MidiToNoteName(clickedMidi.Value);
+                        string message = $"Weet je zeker dat je de gemeten data voor {noteName} wilt verwijderen?";
+                        string caption = "Meting verwijderen";
 
-                        // Clear display if this was the selected key
-                        if (_selectedKeyMidi == clickedMidi.Value)
+                        DialogResult result = MessageBox.Show(message, caption,
+                                                            MessageBoxButtons.YesNo,
+                                                            MessageBoxIcon.Question);
+
+                        if (result == DialogResult.Yes)
                         {
-                            lblQuality.Text = "Measurement deleted";
-                            lblQuality.ForeColor = Color.Gray;
+                            _measurements.Remove(clickedMidi.Value);
+                            _keyColors.Remove(clickedMidi.Value);
+                            pnlPianoKeyboard.Invalidate();
+
+                            // Clear display if this was the selected key
+                            if (_selectedKeyMidi == clickedMidi.Value)
+                            {
+                                lblQuality.Text = "Meting verwijderd";
+                                lblQuality.ForeColor = Color.Gray;
+                            }
                         }
                     }
                     return;
@@ -1051,6 +1153,21 @@ namespace AurisPianoTuner_measure
                 "Rood" => Color.Red,
                 _ => Color.Yellow
             };
+        }
+
+        private static void EnableDoubleBuffering(Control control)
+        {
+            if (control == null)
+            {
+                return;
+            }
+
+            var property = control.GetType().GetProperty(
+                "DoubleBuffered",
+                System.Reflection.BindingFlags.Instance |
+                System.Reflection.BindingFlags.NonPublic);
+
+            property?.SetValue(control, true, null);
         }
     }
 }
